@@ -1,0 +1,762 @@
+<?xml version="1.0" ?>
+<!-- OWL 6.9 arm (identical kinematics to URDF_new.urdf) with the Robotiq
+     Hand-E + D405 + soft-finger add-on from
+     robots/hand_e/robotiq_hand-e_d405_soft_finger.urdf in place of the stamp
+     demo tool. The gripper flange (hand_e_base) sits on the EE flange face
+     36 mm along -Y, with gripper +X (fingers) along the tool axis (-Y) and
+     +Z (camera) along +Z of end_effector_link. The fingers are articulated:
+     prismatic joints finger_joint_1/2 (0..0.029 m, opposite axes) branch off
+     hand_e_base, driven together from the gripper feedback (travel =
+     gripper_position * 0.029). The base->Target chain stays 6-DOF: the
+     finger joints are side branches, never on the controller's chain.
+     The controller tip is the gripper target_frame. -->
+<robot name="URDF_hand_e">
+
+<mujoco>
+  <compiler meshdir="../meshes" balanceinertia="true" discardvisual="false" strippath="true"/>
+</mujoco>
+
+<material name="silver">
+  <color rgba="0.7 0.72 0.75 1.0"/>
+</material>
+<!-- 3D-printed covers: black PLA shells with the orange PLA inserts. -->
+<material name="cover_black">
+  <color rgba="0.16 0.16 0.17 1.0"/>
+</material>
+<material name="cover_orange">
+  <color rgba="0.95 0.45 0.10 1.0"/>
+</material>
+<material name="steel_satin">
+  <color rgba="0.6274509803921569 0.6274509803921569 0.6274509803921569 1.0"/>
+</material>
+<material name="opaque157207237">
+  <color rgba="0.615686274509804 0.8117647058823529 0.9294117647058824 1.0"/>
+</material>
+<material name="opaque255242232">
+  <color rgba="1.0 0.9490196078431372 0.9098039215686274 1.0"/>
+</material>
+<material name="opaque5997180">
+  <color rgba="0.23137254901960785 0.3803921568627451 0.7058823529411765 1.0"/>
+</material>
+<material name="opaque203210238">
+  <color rgba="0.796078431372549 0.8235294117647058 0.9333333333333333 1.0"/>
+</material>
+
+<link name="base_link">
+  <inertial>
+    <origin xyz="0 0 0.015124" rpy="0 0 0"/>
+    <mass value="1.5491012756149127"/>
+    <inertia ixx="0.005739" iyy="0.005739" izz="0.010407" ixy="-0.0" iyz="-0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="AD_80110_Base_v2_1">
+  <inertial>
+    <origin xyz="3.3868663500136176e-07 2.73344505398454e-08 0.06315934863746939" rpy="0 0 0"/>
+    <mass value="5.810276460223187"/>
+    <inertia ixx="0.012598" iyy="0.012598" izz="0.007925" ixy="-0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.116464 0.013677 -0.16196" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_80110_Base_v2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.116464 0.013677 -0.16196" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_80110_Base_v2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="AD_80110_J2_v2_1">
+  <inertial>
+    <origin xyz="0.06315962026567863 -4.780970690697328e-07 6.705842919840777e-08" rpy="0 0 0"/>
+    <mass value="5.810276460223187"/>
+    <inertia ixx="0.007925" iyy="0.012598" izz="0.012598" ixy="-0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.043964 0.013594 -0.28246" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_80110_J2_v2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.043964 0.013594 -0.28246" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_80110_J2_v2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="Link1_urdf_v1_1">
+  <inertial>
+    <origin xyz="0.034497087404599266 -1.5793884086522797e-05 0.1464922055425884" rpy="0 0 0"/>
+    <mass value="3.439231702418552"/>
+    <inertia ixx="0.056375" iyy="0.051918" izz="0.015529" ixy="-2e-06" iyz="-2e-05" ixz="0.000133"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.028464 0.013594 -0.28246" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/Link1_urdf_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.028464 0.013594 -0.28246" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/Link1_urdf_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual name="cover_link1">
+    <origin xyz="-1.273236 -0.000006 -0.194160" rpy="0.000000 0.000000 1.570796"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/link1_cover.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_black"/>
+  </visual>
+  <visual name="cover_link1_orange_top">
+    <origin xyz="-1.273236 -0.000006 -0.194160" rpy="0.000000 0.000000 1.570796"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/shoulder_link1_orange.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_orange"/>
+  </visual>
+  <visual name="cover_link1_orange_bottom">
+    <origin xyz="-1.273236 -0.000006 0.485240" rpy="3.141593 0.000000 -1.570796"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/shoulder_link1_orange.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_orange"/>
+  </visual>
+</link>
+
+<link name="AD_80110_J3_v1_1">
+  <inertial>
+    <origin xyz="0.04765962026567941 -4.780970740102253e-07 6.705844002308226e-08" rpy="0 0 0"/>
+    <mass value="5.810276460223187"/>
+    <inertia ixx="0.007925" iyy="0.012598" izz="0.012598" ixy="-0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.028464 0.013594 -0.57346" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_80110_J3_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.028464 0.013594 -0.57346" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_80110_J3_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="Link2_urdf_v1_1">
+  <inertial>
+    <origin xyz="-0.04092829192854944 3.1672491751337517e-06 0.13254704136264384" rpy="0 0 0"/>
+    <mass value="1.5758349654528188"/>
+    <inertia ixx="0.023342" iyy="0.021943" izz="0.004021" ixy="-0.0" iyz="1e-06" ixz="0.003805"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.043964 0.013594 -0.57346" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/Link2_urdf_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.043964 0.013594 -0.57346" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/Link2_urdf_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual name="cover_elbow_cap">
+    <origin xyz="-1.258300 0.000094 -0.482660" rpy="0.000000 0.000000 1.570796"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/elbow_cap.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_black"/>
+  </visual>
+  <visual name="cover_elbow_ring">
+    <origin xyz="-0.065617 0.006964 -0.483824" rpy="0.000000 0.000000 -1.570796"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/elbow_cap_orange.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_orange"/>
+  </visual>
+  <visual name="cover_link2">
+    <origin xyz="-1.259936 -0.000006 -0.465760" rpy="0.000000 0.000000 1.570796"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/link2_cover.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_black"/>
+  </visual>
+  <visual name="cover_link2_orange">
+    <origin xyz="-1.259936 -0.000006 -0.465760" rpy="0.000000 0.000000 1.570796"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/link2_orange.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_orange"/>
+  </visual>
+</link>
+
+<link name="ShoulderJoint_v1_1">
+  <inertial>
+    <origin xyz="0.020553561092282666 9.186901778100547e-05 0.049643710295228766" rpy="0 0 0"/>
+    <mass value="2.250577218976822"/>
+    <inertia ixx="0.011749" iyy="0.011258" izz="0.013476" ixy="0.0" iyz="1e-06" ixz="-0.002703"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.116464 0.013677 -0.20746" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/ShoulderJoint_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.116464 0.013677 -0.20746" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/ShoulderJoint_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual name="cover_shoulder">
+    <origin xyz="-1.187602 -0.003133 -0.118834" rpy="0.000000 0.000000 1.570796"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/shoulder_cover.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_black"/>
+  </visual>
+  <visual name="cover_shoulder_orange">
+    <origin xyz="1.217302 -0.006337 -0.695333" rpy="-2.243386 0.002454 1.567058"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/shoulder_link1_orange.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_orange"/>
+  </visual>
+</link>
+
+<link name="AD_50070_J4_v2_1">
+  <inertial>
+    <origin xyz="-0.05101616768226394 -4.780992068041667e-07 -2.9108276777822795e-07" rpy="0 0 0"/>
+    <mass value="0.790974663145166"/>
+    <inertia ixx="0.000419" iyy="0.000974" izz="0.000974" ixy="-0.0" iyz="0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.094105 0.013594 -0.863677" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_50070_J4_v2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.094105 0.013594 -0.863677" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_50070_J4_v2_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="Wrist_Link_urdf_v1_1">
+  <inertial>
+    <origin xyz="0.03214691028216807 0.00034194306790149426 0.005136906634191529" rpy="0 0 0"/>
+    <mass value="1.0362186653869645"/>
+    <inertia ixx="0.000966" iyy="0.00145" izz="0.001541" ixy="-1.1e-05" iyz="-3e-06" ixz="-0.000308"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.084105 0.013594 -0.863677" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/Wrist_Link_urdf_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.084105 0.013594 -0.863677" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/Wrist_Link_urdf_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual name="cover_wrist2">
+    <origin xyz="0.261330 1.265742 0.742623" rpy="-3.141593 0.000000 -3.141593"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/wrist_cup.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_black"/>
+  </visual>
+  <visual name="cover_wrist2_orange">
+    <origin xyz="-0.793611 1.262424 -0.016530" rpy="0.061902 1.543549 0.069123"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/wrist_cup_orange.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_orange"/>
+  </visual>
+</link>
+
+<link name="AD_50070_J4_v2_2">
+  <inertial>
+    <origin xyz="0 0 0.051534" rpy="0 0 0"/>
+    <mass value="0.790974663145166"/>
+    <inertia ixx="0.000974" iyy="0.000974" izz="0.000419" ixy="-0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_50070_J4_v2_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_50070_J4_v2_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="Wrist_Link_urdf_v1__1__1">
+  <inertial>
+    <origin xyz="-0.000342421167105 -0.005137197716965 0.093163077964432" rpy="0 0 0"/>
+    <mass value="1.0362186653869645"/>
+    <inertia ixx="0.00145" iyy="0.001541" izz="0.000966" ixy="-3e-06" iyz="0.000308" ixz="1.1e-05"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.005355426643355 0.012658071746716 -0.850160967878288" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/Wrist_Link_urdf_v1__1__1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.005355426643355 0.012658071746716 -0.850160967878288" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/Wrist_Link_urdf_v1__1__1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual name="cover_wrist1">
+    <origin xyz="-1.265743 -0.742642 0.322364" rpy="-1.570796 1.570796 0.000000"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/wrist_cup.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_black"/>
+  </visual>
+  <visual name="cover_wrist1_orange">
+    <origin xyz="-1.262425 0.016511 -0.732577" rpy="-0.007246 -0.027182 1.572679"/>
+    <geometry>
+      <mesh filename="../meshes/Covers/wrist_cup_orange.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="cover_orange"/>
+  </visual>
+</link>
+
+<link name="AD_50070_J4_v2_3">
+  <inertial>
+    <origin xyz="0 0.061016 0" rpy="0 0 0"/>
+    <mass value="0.790974663145166"/>
+    <inertia ixx="0.000974" iyy="0.000419" izz="0.000974" ixy="-0.0" iyz="0.0" ixz="-0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_50070_J4_v2_3.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/AD_50070_J4_v2_3.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="wrist_adapter_link">
+  <inertial>
+    <origin xyz="0 0.004273 0" rpy="0 0 0"/>
+    <mass value="0.2156727932075505"/>
+    <inertia ixx="9.9e-05" iyy="0.000187" izz="9.1e-05" ixy="-0.0" iyz="0.0" ixz="1e-06"/>
+  </inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/5.17-681-ASM_5.17-681-U_WJ_P0_R0_v1_1__1__v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/5.17-681-ASM_5.17-681-U_WJ_P0_R0_v1_1__1__v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="end_effector_link">
+  <inertial>
+    <origin xyz="1.5908388969945036e-07 -0.01763650352851255 0.000428962542803335" rpy="0 0 0"/>
+    <mass value="0.8471652371996939"/>
+    <inertia ixx="0.000592" iyy="0.001061" izz="0.000648" ixy="0.0" iyz="-4e-06" ixz="0.0"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.006292 0.067658 -0.989927" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/6.8_URDF_end_effector_v1_1__1__v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="silver"/>
+  </visual>
+  <collision>
+    <origin xyz="0.006292 0.067658 -0.989927" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/OWL_Release/6.8_URDF_end_effector_v1_1__1__v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="joint1_base_yaw" type="continuous">
+  <origin xyz="0 0 0.05" rpy="0 0 0"/>
+  <parent link="base_link"/>
+  <child link="AD_80110_Base_v2_1"/>
+  <axis xyz="0.0 -0.0 1.0"/>
+</joint>
+
+<joint name="joint2_shoulder" type="continuous">
+  <origin xyz="0.0725 8.3e-05 0.075" rpy="0 0 0"/>
+  <parent link="ShoulderJoint_v1_1"/>
+  <child link="AD_80110_J2_v2_1"/>
+  <axis xyz="1.0 0.0 0.0"/>
+</joint>
+
+<joint name="rigid4" type="fixed">
+  <origin xyz="0.0155 0.0 0.0" rpy="0 0 0"/>
+  <parent link="AD_80110_J2_v2_1"/>
+  <child link="Link1_urdf_v1_1"/>
+</joint>
+
+<joint name="rigid5" type="fixed">
+  <origin xyz="0.0 0.0 0.291" rpy="0 0 0"/>
+  <parent link="Link1_urdf_v1_1"/>
+  <child link="AD_80110_J3_v1_1"/>
+</joint>
+
+<joint name="joint3_elbow" type="continuous">
+  <origin xyz="-0.0155 0.0 0.0" rpy="0 0 0"/>
+  <parent link="AD_80110_J3_v1_1"/>
+  <child link="Link2_urdf_v1_1"/>
+  <axis xyz="-1.0 0.0 0.0"/>
+</joint>
+
+<!-- The shoulder bracket's bottom plate sits on the base actuator's small
+     ring (85 mm) under its thick ring (110 mm), which stands inside the
+     bracket: bottom up, small ring / plate / thick ring. The vendor CAD seats
+     the plate on top of the thick ring instead, 35 mm higher (0.0455); the
+     robot's shoulder axis is 135.5 mm above the base bottom, not 170.5. The
+     visual origins below still place every mesh by the CAD offsets, so the
+     shoulder and everything after it moves with this origin. -->
+<joint name="rigid7" type="fixed">
+  <origin xyz="0.0 0.0 0.0105" rpy="0 0 0"/>
+  <parent link="AD_80110_Base_v2_1"/>
+  <child link="ShoulderJoint_v1_1"/>
+</joint>
+
+<joint name="rigid8" type="fixed">
+  <origin xyz="-0.050141 0.0 0.290217" rpy="0 0 0"/>
+  <parent link="Link2_urdf_v1_1"/>
+  <child link="AD_50070_J4_v2_1"/>
+</joint>
+
+<joint name="joint4_wrist_roll" type="continuous">
+  <origin xyz="0.01 0.0 0.0" rpy="0 0 0"/>
+  <parent link="AD_50070_J4_v2_1"/>
+  <child link="Wrist_Link_urdf_v1_1"/>
+  <axis xyz="1.0 0.0 0.0"/>
+</joint>
+
+<joint name="rigid28" type="fixed">
+  <origin xyz="0.07875 0.000936 -0.06505" rpy="0 0 0"/>
+  <parent link="Wrist_Link_urdf_v1_1"/>
+  <child link="AD_50070_J4_v2_2"/>
+</joint>
+
+<!-- joint5 is the hardware wrist-pitch hinge. Origin is the same axis as
+     before, restated in the motor-centered AD_50070_J4_v2_2 frame (the
+     CAD export had parked that link 0.9 m off the housing). Axis, parent,
+     and child are unchanged. -->
+<joint name="joint5_wrist_pitch" type="continuous">
+  <origin xyz="0 0 0.051534" rpy="0 0 0"/>
+  <parent link="AD_50070_J4_v2_2"/>
+  <child link="Wrist_Link_urdf_v1__1__1"/>
+  <axis xyz="0.0 0.0 1.0"/>
+</joint>
+
+<joint name="rigid30" type="fixed">
+  <origin xyz="-0.000936 -0.0475 0.139766" rpy="0 0 0"/>
+  <parent link="Wrist_Link_urdf_v1__1__1"/>
+  <child link="AD_50070_J4_v2_3"/>
+</joint>
+
+<joint name="rigid31" type="fixed">
+  <origin xyz="0 -0.0075 0" rpy="0 0 0"/>
+  <parent link="AD_50070_J4_v2_3"/>
+  <child link="wrist_adapter_link"/>
+</joint>
+
+<!-- joint6 is the hardware EE-rotate hinge. Same world axis as before;
+     the origin is restated in the adapter's EE-face frame (identity
+     because that face is the hinge). Axis, parent, and child are
+     unchanged. -->
+<joint name="joint6_ee_rotate" type="continuous">
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <parent link="wrist_adapter_link"/>
+  <child link="end_effector_link"/>
+  <axis xyz="0.0 -1.0 0.0"/>
+</joint>
+
+<!-- Robotiq Hand-E + D405 + soft fingers, welded to the EE flange.
+     Geometry and frames come from robots/hand_e/robotiq_hand-e_d405_soft_finger.urdf
+     (gripper base_link renamed hand_e_base to avoid colliding with the arm
+     base). Gripper_Back_Plate sits on the EE flange; the housing flange is
+     13.74 mm along gripper +X in the plate's circular pocket. Finger /
+     slider / soft-finger meshes are placed at the add-on's zero prismatic
+     stroke. camera_frame is the D405 back-face center, identity vs the
+     housing; Camera is that same pose for existing tools. -->
+<link name="hand_e_base">
+  <inertial>
+    <origin xyz="0.06822181297217005 4.278352133068836e-05 0.0068450046944859375" rpy="0 0 0"/>
+    <mass value="2.840137567492122"/>
+    <inertia ixx="0.00225149" iyy="0.00490899" izz="0.00416351" ixy="8.84262e-06" iyz="2.22788e-06" ixz="-0.000962826"/>
+  </inertial>
+  <visual>
+    <origin xyz="0.099456 -0.000009 0.033992" rpy="0 1.57079632679 -1.57079632679"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/Gripper_Back_Plate_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="steel_satin"/>
+  </visual>
+  <collision>
+    <origin xyz="0.099456 -0.000009 0.033992" rpy="0 1.57079632679 -1.57079632679"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/Gripper_Back_Plate_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual>
+    <origin xyz="0.01374 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="steel_satin"/>
+  </visual>
+  <collision>
+    <origin xyz="0.01374 0 0" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/base_link.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual>
+    <origin xyz="0.09965636657714843 -1.906585693359375e-05 0.034" rpy="0 1.57079632679 -1.57079632679"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/D405_Adapter_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="opaque157207237"/>
+  </visual>
+  <collision>
+    <origin xyz="0.09965636657714843 -1.906585693359375e-05 0.034" rpy="0 1.57079632679 -1.57079632679"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/D405_Adapter_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual>
+    <origin xyz="0.09965636657714843 -1.906585693359375e-05 0.034" rpy="0 1.57079632679 -1.57079632679"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/D405_Solid_v5_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="opaque203210238"/>
+  </visual>
+  <collision>
+    <origin xyz="0.09965636657714843 -1.906585693359375e-05 0.034" rpy="0 1.57079632679 -1.57079632679"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/D405_Solid_v5_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<!-- Articulated Hand-E fingers, transplanted verbatim from
+     robots/hand_e/robotiq_hand-e_d405_soft_finger.urdf (joints "Slider 3"
+     and "Slider 4"; hand_e_base is frame-identical to its base_link, so
+     origins/axes/limits are unchanged). Both joints travel 0..0.029 m and
+     are driven together from the gripper feedback: travel =
+     gripper_position (0 open .. 1 closed) * 0.029. The axes oppose, so
+     the same value closes both fingers symmetrically. -->
+<link name="finger_slider_1">
+  <inertial>
+    <origin xyz="0.012068874317543781 0.0510203918924256 0.009806833884144436" rpy="0 0 0"/>
+    <mass value="0.5462954968262015"/>
+    <inertia ixx="0.000786609" iyy="0.000177207" izz="0.00069794" ixy="-4.59875e-05" iyz="-2.43543e-05" ixz="-2.15485e-05"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.019696 0.001916 -0.034655" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/ROBOTIQ_HAND-E_slider_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="opaque255242232"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.019696 0.001916 -0.034655" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/ROBOTIQ_HAND-E_slider_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual>
+    <origin xyz="-0.019696 0.001916 -0.034655" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/Finger_1_long_v18_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="steel_satin"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.019696 0.001916 -0.034655" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/Finger_1_long_v18_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual>
+    <origin xyz="-0.019696 0.001916 -0.034655" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/soft_gripper_finger_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="opaque5997180"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.019696 0.001916 -0.034655" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/soft_gripper_finger_v1_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<link name="finger_slider_2">
+  <inertial>
+    <origin xyz="-0.012068874317544616 0.05102039189242622 -0.009806828051591603" rpy="0 0 0"/>
+    <mass value="0.5462954968262015"/>
+    <inertia ixx="0.000786609" iyy="0.000177207" izz="0.00069794" ixy="4.59875e-05" iyz="2.43543e-05" ixz="-2.15485e-05"/>
+  </inertial>
+  <visual>
+    <origin xyz="-0.048304 0.001916 0.034674" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/ROBOTIQ_HAND-E_slider_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="opaque255242232"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.048304 0.001916 0.034674" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/ROBOTIQ_HAND-E_slider_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual>
+    <origin xyz="-0.048304 0.001916 0.034674" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/Finger_1_long_v18_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="steel_satin"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.048304 0.001916 0.034674" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/Finger_1_long_v18_2.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+  <visual>
+    <origin xyz="-0.048304 0.001916 0.034674" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/soft_gripper_finger_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+    <material name="opaque5997180"/>
+  </visual>
+  <collision>
+    <origin xyz="-0.048304 0.001916 0.034674" rpy="0 0 0"/>
+    <geometry>
+      <mesh filename="../meshes/hand_e/soft_gripper_finger_v1_1.stl" scale="0.001 0.001 0.001"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="finger_joint_1" type="prismatic">
+  <origin xyz="0.09774036657714843 -0.03467406585693359 0.014304" rpy="0 1.57079632679 -1.57079632679"/>
+  <parent link="hand_e_base"/>
+  <child link="finger_slider_1"/>
+  <axis xyz="0.0 0.0 -1.0"/>
+  <limit upper="0.029" lower="0.0" effort="100" velocity="100"/>
+</joint>
+
+<joint name="finger_joint_2" type="prismatic">
+  <origin xyz="0.09774036657714843 0.03465493414306641 -0.014304" rpy="0 1.57079632679 -1.57079632679"/>
+  <parent link="hand_e_base"/>
+  <child link="finger_slider_2"/>
+  <axis xyz="-0.0 -0.0 1.0"/>
+  <limit upper="0.029" lower="0.0" effort="100" velocity="100"/>
+</joint>
+
+
+<link name="target_frame">
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.001"/>
+    <inertia ixx="1e-06" iyy="1e-06" izz="1e-06" ixy="0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+</link>
+
+<link name="camera_frame">
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.001"/>
+    <inertia ixx="1e-06" iyy="1e-06" izz="1e-06" ixy="0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+</link>
+
+<link name="Camera">
+  <inertial>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.001"/>
+    <inertia ixx="1e-06" iyy="1e-06" izz="1e-06" ixy="0.0" iyz="0.0" ixz="0.0"/>
+  </inertial>
+</link>
+
+<joint name="hand_e_mount" type="fixed">
+  <origin xyz="0 -0.036 0" rpy="0 0 -1.57079632679"/>
+  <parent link="end_effector_link"/>
+  <child link="hand_e_base"/>
+</joint>
+
+<joint name="target_frame_joint" type="fixed">
+  <origin xyz="0.242305 0 0" rpy="0 0 0"/>
+  <parent link="hand_e_base"/>
+  <child link="target_frame"/>
+</joint>
+
+<joint name="camera_frame_joint" type="fixed">
+  <origin xyz="0.11148336657724148 -1.0065856743884e-05 0.048" rpy="0 0 0"/>
+  <parent link="hand_e_base"/>
+  <child link="camera_frame"/>
+</joint>
+
+<joint name="cam_def" type="fixed">
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <parent link="camera_frame"/>
+  <child link="Camera"/>
+</joint>
+</robot>

@@ -1,0 +1,397 @@
+import argparse
+import logging
+import math
+import sys
+from pathlib import Path
+from xml.etree.ElementTree import ParseError
+
+import prepare_owl69_model
+from robot_interface import Shell, add_endpoint_arguments, resolve_endpoints
+from svg_to_gcode import gcode, image, pens, robot, viewer
+
+
+def finite(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(f"{text} is not a finite number")
+    return value
+
+
+def positive(text: str) -> float:
+    value = finite(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"{text} must be positive")
+    return value
+
+
+def non_negative(text: str) -> float:
+    value = finite(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{text} must not be negative")
+    return value
+
+
+def hatch_spacing(text: str) -> float:
+    value = non_negative(text)
+    if 0 < value < gcode.MIN_HATCH_MM:
+        raise argparse.ArgumentTypeError(
+            f"{text} must be 0 or at least {gcode.MIN_HATCH_MM:g} mm"
+        )
+    return value
+
+
+def feed_rate(text: str) -> float:
+    value = positive(text)
+    if value > robot.MAX_FEED_MM_MIN:
+        raise argparse.ArgumentTypeError(
+            f"{text} exceeds the {robot.MAX_FEED_MM_MIN:g} mm/min limit"
+        )
+    return value
+
+
+def positive_int(text: str) -> int:
+    value = int(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"{text} must be a positive whole number")
+    return value
+
+
+def non_negative_int(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{text} must not be negative")
+    return value
+
+
+def odd_size(text: str) -> int:
+    value = positive_int(text)
+    if value % 2 == 0:
+        raise argparse.ArgumentTypeError(f"{text} must be odd")
+    return value
+
+
+def tilt_angle(text: str) -> float:
+    value = non_negative(text)
+    if value > robot.MAX_TILT_DEG:
+        raise argparse.ArgumentTypeError(
+            f"{text} exceeds the {robot.MAX_TILT_DEG:g} degree limit"
+        )
+    return value
+
+
+def paper_size(text: str) -> tuple[float, float]:
+    try:
+        return gcode.parse_paper(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def pen_set(text: str) -> list[pens.Pen]:
+    try:
+        return pens.parse_pens(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def run_image(args: argparse.Namespace) -> int:
+    if args.tone:
+        svg = image.image_to_line_screen(args.image, args.pens, args.resolution)
+    elif args.one_line:
+        svg = image.image_to_one_line(
+            args.image, args.pens, args.resolution, args.breaks
+        )
+    else:
+        svg = image.image_to_svg(
+            args.image,
+            args.pens,
+            args.resolution,
+            args.smoothing,
+            args.speckle,
+            args.blend,
+        )
+    args.output.write_text(svg)
+    print(f"wrote {args.output}")
+    return 0
+
+
+def run_gcode(args: argparse.Namespace) -> int:
+    layers = gcode.svg_to_layers(
+        args.svg,
+        args.paper,
+        args.margin,
+        args.tolerance,
+        args.pens,
+        args.hatch,
+        args.hatch_angle,
+        args.outline,
+    )
+    args.output.write_text(gcode.to_gcode(layers, args.feed, args.lift))
+    counts = ", ".join(f"{len(layer.strokes)} {layer.pen.name}" for layer in layers)
+    print(f"wrote {counts} strokes to {args.output}")
+    return 0
+
+
+def run_teach(args: argparse.Namespace) -> int:
+    shell = Shell(*resolve_endpoints(args))
+    robot.check_tip_link(shell)
+    x, y, z = robot.pen_tip_position(shell, args.pen_offset)
+    print(f"--origin {x:.1f} {y:.1f} {z:.1f}")
+    return 0
+
+
+def run_draw(args: argparse.Namespace) -> int:
+    text = args.gcode.read_text()
+    placement = robot.Placement(
+        tuple(args.origin), math.radians(args.yaw), args.z_offset
+    )
+    if args.dry_run:
+        # The arm's start pose is unknown offline, so begin at the first XY travel.
+        steps = robot.parse_gcode(text, (0.0, 0.0, 0.0), args.rapid)
+        moves = [step for step in steps if isinstance(step, robot.Move)]
+        start = next((m.end for m in moves if m.start[:2] != m.end[:2]), moves[0].start)
+        steps = robot.parse_gcode(text, start, args.rapid)
+        segments, hops = robot.plan_motion(steps, args.tilt)
+        low, high, seconds = robot.summarize(segments, placement)
+        for axis, lo, hi in zip("xyz", low, high):
+            print(f"pen tip {axis}: {lo:8.1f} .. {hi:8.1f} mm (base frame)")
+        changes = sum(isinstance(segment, robot.PenChange) for segment in segments)
+        print(
+            f"{len(moves)} moves, {changes} pen changes and {hops} hops, about "
+            f"{seconds / 60:.1f} min of motion plus the approach from the arm's "
+            "current pose and the pen swaps"
+        )
+        return 0
+    shell = Shell(*resolve_endpoints(args))
+    worst = robot.draw(
+        shell,
+        text,
+        placement,
+        args.pen_offset,
+        args.rapid,
+        args.tilt,
+        args.swap_wait,
+    )
+    print(f"done; largest pen-tip error while drawing {worst:.2f} mm")
+    return 0
+
+
+def run_view(args: argparse.Namespace) -> int:
+    placement = robot.Placement(tuple(args.origin), math.radians(args.yaw), 0.0)
+    pub, cmd = resolve_endpoints(args)
+    served = prepare_owl69_model.fetch_served_model(cmd)
+    bundle = prepare_owl69_model.prepare_from_controller(cmd, served=served)
+    urdf, _ = served
+    model = viewer.build_scene(bundle, urdf, args.paper, placement, args.pen_offset)
+    viewer.show(Shell(pub, cmd), model, placement, args.paper)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Draw SVG images on paper with the Owl 6.9 arm."
+    )
+    commands = parser.add_subparsers(required=True)
+
+    paper = argparse.ArgumentParser(add_help=False)
+    paper.add_argument(
+        "--paper",
+        type=paper_size,
+        default="A4",
+        help="A3, A4, A5, LETTER or WIDTHxHEIGHT in mm (default A4 portrait)",
+    )
+
+    pen_choice = argparse.ArgumentParser(add_help=False)
+    pen_choice.add_argument(
+        "--pens",
+        type=pen_set,
+        default=pens.DEFAULT_PENS,
+        help="the pens on hand as NAME=#RRGGBB,... (default CMYK)",
+    )
+
+    to_svg = commands.add_parser(
+        "image",
+        parents=[pen_choice],
+        help="trace a raster image into an SVG with one layer per pen",
+    )
+    to_svg.add_argument("image", type=Path)
+    to_svg.add_argument("output", type=Path)
+    to_svg.add_argument(
+        "--resolution",
+        type=positive_int,
+        default=400,
+        help="shrink the image to this many pixels on its long side first",
+    )
+    to_svg.add_argument(
+        "--smoothing",
+        type=odd_size,
+        default=5,
+        help="mode filter size in pixels that votes away stray pixels; 1 turns it off",
+    )
+    to_svg.add_argument(
+        "--speckle",
+        type=non_negative,
+        default=8.0,
+        help="drop regions and holes smaller than this many pixels square",
+    )
+    to_svg.add_argument(
+        "--blend",
+        type=positive_int,
+        default=2,
+        help="mix colours by overlapping up to this many pens; 1 gives each region "
+        "a single pen",
+    )
+    style = to_svg.add_mutually_exclusive_group()
+    style.add_argument(
+        "--tone",
+        action="store_true",
+        help="shade with crossing pen lines instead of filled regions, for photos; "
+        "the lines are a pixel apart, so set --resolution to the drawing's width "
+        "over the pen width (--smoothing, --speckle and --blend are ignored)",
+    )
+    style.add_argument(
+        "--one-line",
+        action="store_true",
+        help="draw each pen as one smooth line that wanders more densely where more "
+        "of that pen is wanted, for photos; the line is a pixel wide, so set "
+        "--resolution to the drawing's width over the pen width (--smoothing, "
+        "--speckle and --blend are ignored)",
+    )
+    to_svg.add_argument(
+        "--breaks",
+        type=non_negative_int,
+        default=3,
+        help="with --one-line, lift each pen at most this many times, cutting its "
+        "line at the longest jumps",
+    )
+    to_svg.set_defaults(handler=run_image)
+
+    to_gcode = commands.add_parser(
+        "gcode",
+        parents=[paper, pen_choice],
+        help="convert an SVG to G-code fitted to the paper, one pen at a time",
+    )
+    to_gcode.add_argument("svg", type=Path)
+    to_gcode.add_argument("output", type=Path)
+    to_gcode.add_argument("--margin", type=non_negative, default=10.0, help="mm")
+    to_gcode.add_argument(
+        "--tolerance",
+        type=positive,
+        default=0.1,
+        help="max distance between a curve and its line segments, mm",
+    )
+    to_gcode.add_argument("--feed", type=feed_rate, default=1500.0, help="mm/min")
+    to_gcode.add_argument(
+        "--lift", type=positive, default=5.0, help="pen-up height above the paper, mm"
+    )
+    to_gcode.add_argument(
+        "--hatch",
+        type=hatch_spacing,
+        default=0.8,
+        help="spacing of the lines that fill shapes, mm; 0 leaves fills empty",
+    )
+    to_gcode.add_argument(
+        "--hatch-angle",
+        type=finite,
+        default=45.0,
+        help="direction of the first pen's fill lines from the paper's X edge, "
+        "degrees; each later pen turns 180/pens further so overlaps cross-hatch",
+    )
+    to_gcode.add_argument(
+        "--outline",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="trace the edge of every filled shape",
+    )
+    to_gcode.set_defaults(handler=run_gcode)
+
+    pen_offset = argparse.ArgumentParser(add_help=False)
+    pen_offset.add_argument(
+        "--pen-offset",
+        type=finite,
+        required=True,
+        help="pen tip distance beyond the gripper's target_frame along its +X, mm",
+    )
+
+    teach = commands.add_parser(
+        "teach",
+        parents=[pen_offset],
+        help="print --origin for the pen tip touching the paper's bottom-left corner",
+    )
+    add_endpoint_arguments(teach)
+    teach.set_defaults(handler=run_teach)
+
+    placement = argparse.ArgumentParser(add_help=False)
+    placement.add_argument(
+        "--origin",
+        type=finite,
+        nargs=3,
+        required=True,
+        metavar=("X", "Y", "Z"),
+        help="paper bottom-left corner on its surface, base frame, mm",
+    )
+    placement.add_argument(
+        "--yaw",
+        type=finite,
+        default=0.0,
+        help="angle of the paper's X edge from base X, degrees",
+    )
+
+    draw = commands.add_parser(
+        "draw", parents=[pen_offset, placement], help="draw a G-code file on the robot"
+    )
+    draw.add_argument("gcode", type=Path)
+    draw.add_argument(
+        "--z-offset",
+        type=finite,
+        default=0.0,
+        help="height trim added to every Z, mm (negative presses harder)",
+    )
+    draw.add_argument(
+        "--rapid", type=feed_rate, default=3000.0, help="pen-up travel speed, mm/min"
+    )
+    draw.add_argument(
+        "--tilt",
+        type=tilt_angle,
+        default=15.0,
+        help="lean the pen back from its direction of travel, degrees; "
+        "0 holds the start orientation",
+    )
+    draw.add_argument(
+        "--swap-wait",
+        type=non_negative,
+        metavar="SECONDS",
+        help="wait this long at each pen change instead of asking for Enter",
+    )
+    draw.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the pen-tip bounds and duration without moving",
+    )
+    add_endpoint_arguments(draw)
+    draw.set_defaults(handler=run_draw)
+
+    view = commands.add_parser(
+        "view",
+        parents=[pen_offset, placement, paper],
+        help="watch the arm in MuJoCo and see the ink on the paper (run under mjpython)",
+    )
+    add_endpoint_arguments(view)
+    view.set_defaults(handler=run_view)
+    return parser
+
+
+def main() -> int:
+    logging.basicConfig(format="%(levelname)s: %(message)s")
+    args = build_parser().parse_args()
+    try:
+        return args.handler(args)
+    except (OSError, ParseError, RuntimeError, ValueError, robot.DrawError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

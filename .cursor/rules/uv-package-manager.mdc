@@ -1,0 +1,33 @@
+---
+description: Use uv as the default Python package and environment manager
+alwaysApply: true
+---
+
+# Use uv for Everything Python
+
+Never use `pip`, `pip install`, `python -m venv`, `poetry`, or `conda` directly.
+
+| Task | Command |
+|------|---------|
+| Add a dependency | `uv add <package>` |
+| Add a dev dependency | `uv add --dev <package>` |
+| Remove a dependency | `uv remove <package>` |
+| Install / sync the environment | `uv sync` |
+| Run a script | `uv run main.py` |
+| Run a tool (pytest, ruff, etc.) | `uv run pytest`, `uv run ruff check .` |
+| One-off tool without installing | `uvx <tool>` |
+| Upgrade the lockfile | `uv lock --upgrade` |
+
+- Dependencies live in `pyproject.toml`; never create `requirements.txt` unless explicitly asked.
+- Commit `uv.lock`; never edit it by hand.
+- Respect the version in `.python-version`; use `uv python pin <version>` to change it.
+
+```bash
+# ❌ BAD
+pip install svgpathtools
+python main.py
+
+# ✅ GOOD
+uv add svgpathtools
+uv run main.py
+```

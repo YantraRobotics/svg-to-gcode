@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+
+# Ponytail checkout, and the hooks that run it by absolute path on this machine
+.cursor/ponytail/
+.cursor/hooks.json
+
+# MuJoCo model bundle built by tools/prepare_owl69_model.py
+owl69_mjcf/
+
+# Generated drawings, G-code, previews and timelapses
+output/

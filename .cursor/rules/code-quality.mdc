@@ -1,0 +1,41 @@
+---
+description: Readable, correct, idiomatic code with no unnecessary comments or docs
+alwaysApply: true
+---
+
+# Code Quality Standards
+
+## No Unnecessary Comments or Docs
+- Do not create README, markdown, or documentation files unless explicitly asked.
+- Do not add comments that restate what the code does. Code should explain itself through clear names and structure.
+- Only comment on a non-obvious *why* (a constraint, workaround, or spec requirement the code cannot show).
+
+```python
+# ❌ BAD
+# Loop over paths and convert each one
+for path in paths:
+    convert(path)
+
+# ✅ GOOD
+for path in paths:
+    convert(path)
+
+# GRBL rejects feed rates of zero, so clamp to the minimum.
+feed_rate = max(feed_rate, MIN_FEED_RATE)
+```
+
+## Readable, Correct Code
+- Use descriptive names; no single-letter names outside short loops or math.
+- Keep functions small and focused on one job; avoid deep nesting with early returns.
+- Add type hints to all function signatures; use `dataclass` for structured data.
+- No magic numbers; use named constants.
+- Validate inputs at boundaries and raise specific exceptions with clear messages. Never swallow errors with bare `except:` or `except Exception: pass`.
+- Handle edge cases: empty input, zero-length paths, invalid units, missing attributes.
+- Use `pathlib.Path` for file paths and context managers for file I/O.
+- Follow PEP 8; format and lint with `uv run ruff format` and `uv run ruff check`.
+- No dead code, unused imports, debug prints, or commented-out code.
+- Do not over-engineer: no abstractions without a real need.
+
+## Verify Before Finishing
+- Run the code or tests with `uv run` and confirm it works before declaring done.
+- Add tests with `pytest` for new logic and run `uv run pytest`.

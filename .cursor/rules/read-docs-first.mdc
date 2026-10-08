@@ -1,0 +1,18 @@
+---
+description: Fetch and read official documentation before implementing anything
+alwaysApply: true
+---
+
+# Read the Docs Before Implementing
+
+Before writing code that uses a library, API, file format, or protocol, fetch and read its current official documentation. Do not rely on memory for APIs, signatures, or defaults.
+
+1. Identify every library, spec, or tool involved (e.g. `svgpathtools`, the SVG path spec, G-code dialects like GRBL/Marlin).
+2. Fetch the official docs for the installed version (check `pyproject.toml` / `uv.lock`).
+3. Confirm function signatures, parameters, return types, units, and edge cases.
+4. Only then implement, following the documented recommended usage.
+
+- Prefer official docs, specs, and source code over blog posts or Q&A answers.
+- If the docs contradict existing code, follow the docs and flag the discrepancy.
+- If docs cannot be found, say so explicitly instead of guessing.
+- Never invent APIs, flags, or G-code commands that the docs do not describe.
