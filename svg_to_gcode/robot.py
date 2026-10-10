@@ -67,8 +67,21 @@ MAX_TILT_RATE_RAD_S = 1.0
 PEN_STATUS_ENDPOINT = f"ipc://{Path(tempfile.gettempdir()) / 'svg-to-gcode-pen'}"
 PEN_STATUS_PERIOD_S = 1.0
 TOOL_TABLE_ENTRY = re.compile(r"T(\d+)\s+(\S+)\s+(#\w+)", re.IGNORECASE)
-RUNNING = {name: code for code, name in CONTROLLER_STATES.items()}["running"]
+STATE_CODES = {name: code for code, name in CONTROLLER_STATES.items()}
+RUNNING = STATE_CODES["running"]
+CONTROLLER_ERROR = STATE_CODES["error"]
 ZERO_TWIST = (0.0,) * 6
+CORNER_NAMES = ("bottom-left", "bottom-right", "top-right", "top-left")
+RIGHT_ANGLE_DEG = 90.0
+# The arm's reported frame skews measured corners by a few degrees; more than
+# this means a corner is mistyped or listed out of order.
+MAX_CORNER_SKEW_DEG = 15.0
+# How far the corner heights may be from lying in one plane before a height
+# is taken to be mistyped.
+MAX_CORNER_TWIST_MM = 5.0
+MIN_PAPER_MM = 10.0
+INVERSE_ITERATIONS = 20
+INVERSE_TOLERANCE_MM = 1e-6
 
 
 class DrawError(Exception):
@@ -143,6 +156,119 @@ class Placement:
         )
 
 
+@dataclass(frozen=True)
+class CornerPlacement(Placement):
+    """Paper stretched between its corners as the arm reports them.
+
+    corners are on the paper's surface (base frame mm, CORNER_NAMES order) and
+    size its width and height (mm). Points between them, heights included, are
+    blended bilinearly, so the pen lands on every measured corner however the
+    arm's reported frame is skewed. origin and yaw follow the bottom edge.
+    """
+
+    corners: tuple[Vec3, Vec3, Vec3, Vec3]
+    size: tuple[float, float]
+
+    def to_base(self, point: Vec3) -> Vec3:
+        """Paper mm to base-frame meters."""
+        x, y, z = point
+        width, height = self.size
+        base_x, base_y, surface = self._blend(x / width, y / height)
+        return (
+            base_x / MM_PER_M,
+            base_y / MM_PER_M,
+            (surface + self.z_offset + z) / MM_PER_M,
+        )
+
+    def to_paper(self, point: Vec3) -> Vec3:
+        """Base-frame meters to paper mm, inverting the blend by Newton's method."""
+        target_x, target_y = point[0] * MM_PER_M, point[1] * MM_PER_M
+        s = t = 0.5
+        for _ in range(INVERSE_ITERATIONS):
+            blend_x, blend_y, surface = self._blend(s, t)
+            miss_x, miss_y = target_x - blend_x, target_y - blend_y
+            if math.hypot(miss_x, miss_y) < INVERSE_TOLERANCE_MM:
+                width, height = self.size
+                return (
+                    s * width,
+                    t * height,
+                    point[2] * MM_PER_M - surface - self.z_offset,
+                )
+            (along_s_x, along_s_y), (along_t_x, along_t_y) = self._edges(s, t)
+            determinant = along_s_x * along_t_y - along_t_x * along_s_y
+            s += (miss_x * along_t_y - along_t_x * miss_y) / determinant
+            t += (along_s_x * miss_y - miss_x * along_s_y) / determinant
+        raise DrawError(f"could not find base point {point} on the paper")
+
+    def _blend(self, s: float, t: float) -> Vec3:
+        """The point s of the way along the paper and t of the way up it (mm)."""
+        bottom_left, bottom_right, top_right, top_left = self.corners
+        return tuple(
+            (1 - s) * (1 - t) * bl + s * (1 - t) * br + s * t * tr + (1 - s) * t * tl
+            for bl, br, tr, tl in zip(bottom_left, bottom_right, top_right, top_left)
+        )
+
+    def _edges(
+        self, s: float, t: float
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        """How the blended XY moves per unit of s and per unit of t."""
+        bottom_left, bottom_right, top_right, top_left = self.corners
+        along_s = [
+            (1 - t) * (br - bl) + t * (tr - tl)
+            for bl, br, tr, tl in zip(bottom_left, bottom_right, top_right, top_left)
+        ]
+        along_t = [
+            (1 - s) * (tl - bl) + s * (tr - br)
+            for bl, br, tr, tl in zip(bottom_left, bottom_right, top_right, top_left)
+        ]
+        return (along_s[0], along_s[1]), (along_t[0], along_t[1])
+
+
+def corner_placement(corners: list[Vec3], z_offset: float) -> CornerPlacement:
+    """The paper between its corners (base frame mm, CORNER_NAMES order), as wide
+    and tall as its opposite edges average."""
+    bottom_left, bottom_right, top_right, top_left = corners
+    width = (_across(bottom_left, bottom_right) + _across(top_left, top_right)) / 2
+    height = (_across(bottom_left, top_left) + _across(bottom_right, top_right)) / 2
+    if min(width, height) < MIN_PAPER_MM:
+        raise ValueError(f"the corners span only {width:.1f} x {height:.1f} mm")
+    angles = corner_angles(corners)
+    if any(abs(angle - RIGHT_ANGLE_DEG) > MAX_CORNER_SKEW_DEG for angle in angles):
+        shown = ", ".join(f"{angle:.0f}" for angle in angles)
+        raise ValueError(
+            f"the corners meet at {shown} degrees, more than "
+            f"{MAX_CORNER_SKEW_DEG:g} off square; list them {', '.join(CORNER_NAMES)}, "
+            "anticlockwise seen from above, and check each"
+        )
+    twist = abs(bottom_left[2] + top_right[2] - bottom_right[2] - top_left[2])
+    if twist > MAX_CORNER_TWIST_MM:
+        raise ValueError(
+            f"the corner heights are {twist:.1f} mm out of one plane (limit "
+            f"{MAX_CORNER_TWIST_MM:g} mm); check their Z"
+        )
+    yaw = math.atan2(bottom_right[1] - bottom_left[1], bottom_right[0] - bottom_left[0])
+    return CornerPlacement(bottom_left, yaw, z_offset, tuple(corners), (width, height))
+
+
+def corner_angles(corners: list[Vec3]) -> list[float]:
+    """The angle inside each corner (degrees) going round them; above 180 where
+    they run clockwise seen from above, or cross."""
+    angles = []
+    for previous, corner, following in zip(
+        corners[-1:] + corners[:-1], corners, corners[1:] + corners[:1]
+    ):
+        in_x, in_y = corner[0] - previous[0], corner[1] - previous[1]
+        out_x, out_y = following[0] - corner[0], following[1] - corner[1]
+        turn = math.atan2(in_x * out_y - in_y * out_x, in_x * out_x + in_y * out_y)
+        angles.append(2 * RIGHT_ANGLE_DEG - math.degrees(turn))
+    return angles
+
+
+def _across(a: Vec3, b: Vec3) -> float:
+    """Horizontal distance between two base-frame points."""
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
 class PenAnnouncer:
     """Publishes the pen in the gripper for the viewer: on each change, then every second."""
 
@@ -175,7 +301,7 @@ def parse_gcode(text: str, start: Vec3, rapid_feed: float) -> list[Step]:
     Pens come from '; T<n> NAME #RRGGBB' comment lines, and M6 swaps in the pen of
     the last T word, which may share its line.
     """
-    tools = _tool_table(text)
+    tools = tool_table(text)
     position = start
     feed = None
     tool = None
@@ -217,6 +343,59 @@ def parse_gcode(text: str, start: Vec3, rapid_feed: float) -> list[Step]:
     if not any(isinstance(step, Move) for step in steps):
         raise ValueError("the G-code has no moves")
     return steps
+
+
+def steps_to_draw(
+    text: str, start: Vec3, rapid_feed: float, tool: int | None
+) -> list[Step]:
+    """The G-code's steps from start, or only tool's when one is given (one_pen)."""
+    steps = parse_gcode(text, start, rapid_feed)
+    return steps if tool is None else one_pen(steps, tool, start, rapid_feed)
+
+
+def one_pen(steps: list[Step], tool: int, start: Vec3, rapid_feed: float) -> list[Step]:
+    """Only tool's moves, for its pen already in the gripper: no pen change.
+
+    From start the pen stays at least as high as it began until it is above the
+    first stroke, and after the last stroke it rises to PEN_CHANGE_HEIGHT_MM for
+    the operator to swap pens.
+    """
+    swaps = sum(isinstance(step, PenChange) and step.tool == tool for step in steps)
+    if swaps > 1:
+        raise ValueError(f"T{tool} is swapped in more than once")
+    active = None
+    moves: list[Move] = []
+    for step in steps:
+        if isinstance(step, PenChange):
+            active = step.tool
+        elif active == tool:
+            moves.append(step)
+    first = next((index for index, move in enumerate(moves) if not move.rapid), None)
+    if first is None:
+        raise ValueError(f"T{tool} draws nothing in this G-code")
+    moves = moves[first:]
+    above_first, last = moves[0].start, moves[-1].end
+    height = max(start[2], above_first[2])
+    path = [start, (*start[:2], height), (*above_first[:2], height), above_first]
+    raised = (*last[:2], max(last[2], PEN_CHANGE_HEIGHT_MM))
+    approach = [Move(a, b, rapid_feed, rapid=True) for a, b in pairwise(path) if a != b]
+    departure = [Move(last, raised, rapid_feed, rapid=True)] if raised != last else []
+    return [*approach, *moves, *departure]
+
+
+def check_on_paper(text: str, size: tuple[float, float]) -> None:
+    """Refuse G-code that goes beyond the paper its corners span."""
+    width, height = size
+    for step in parse_gcode(text, (0.0, 0.0, 0.0), MAX_FEED_MM_MIN):
+        if not isinstance(step, Move):
+            continue
+        x, y, _ = step.end
+        if not (0.0 <= x <= width and 0.0 <= y <= height):
+            raise ValueError(
+                f"the G-code goes to X{x:g} Y{y:g}, off the {width:.1f} x "
+                f"{height:.1f} mm paper the corners span; make it with --paper "
+                f"{math.floor(width)}x{math.floor(height)}"
+            )
 
 
 def chains(steps: list[Step]) -> list[Segment]:
@@ -292,6 +471,22 @@ def summarize(
     return low, high, seconds
 
 
+def check_not_in_error(shell: Shell) -> None:
+    """Refuse a controller in error instead of letting ensure_running_mode clear it.
+
+    After a real E-stop the drives report zero joint angles until the arm is
+    re-referenced (PROTOCOL.md), so twists would move it unpredictably.
+    """
+    telemetry = shell.telemetry(timeout_s=1.0)
+    if telemetry is None:
+        raise DrawError("no telemetry; is the controller serving?")
+    if telemetry["controller_state"] == CONTROLLER_ERROR:
+        raise DrawError(
+            f"the controller is in error ({telemetry['fault'] or 'no fault text'}); "
+            "recover it yourself, re-referencing the arm after an E-stop, then draw again"
+        )
+
+
 def check_tip_link(shell: Shell) -> None:
     """Refuse a controller whose TCP is not the Hand-E target_frame."""
     shell.req.send(encode_get_model())
@@ -332,25 +527,33 @@ def draw(
     rapid_feed: float,
     tilt_deg: float,
     swap_wait: float | None,
+    tool: int | None = None,
 ) -> float:
     """Draw the G-code; returns the largest pen-tip error while drawing (mm).
 
     The pen leans tilt_deg back from its direction of travel; 0 holds the start
     orientation. Pen changes wait swap_wait seconds, or for Enter when it is None.
+    With tool, only that tool's strokes are drawn (one_pen) and the arm is held
+    afterwards for the operator to swap pens.
     """
-    parse_gcode(text, (0.0, 0.0, 0.0), rapid_feed)
-    check_tip_link(shell)
+    steps_to_draw(text, (0.0, 0.0, 0.0), rapid_feed, tool)
+    check_not_in_error(shell)
+    # With no offset the controller's TCP is the pen tip, whatever link it is on.
+    if pen_offset:
+        check_tip_link(shell)
     if not ensure_running_mode(shell, "world_twist"):
         raise DrawError("could not bring the controller to running in world_twist")
     telemetry = _telemetry(shell)
     start_quat = tuple(telemetry["tcp_pose"][3:7])
     upright = tilt.vertical_from(start_quat) if tilt_deg else start_quat
     start = placement.to_paper(pen_tip(telemetry["tcp_pose"], pen_offset))
-    segments, _ = plan_motion(parse_gcode(text, start, rapid_feed), tilt_deg)
+    segments, _ = plan_motion(steps_to_draw(text, start, rapid_feed, tool), tilt_deg)
     goals = orientations(segments, placement, upright, math.radians(tilt_deg))
     worst = 0.0
     with closing(PenAnnouncer()) as announcer:
         plotter = Plotter(shell, placement, pen_offset, announcer)
+        if tool is not None:
+            announcer.announce(tool_table(text)[tool])
         try:
             for segment, goal in zip(segments, goals):
                 if isinstance(segment, PenChange):
@@ -359,6 +562,8 @@ def draw(
                 error = plotter.follow(segment, goal)
                 if segment[0].is_drawing:
                     worst = max(worst, error)
+            if tool is not None:
+                plotter.hold()
         except DrawError, KeyboardInterrupt:
             plotter.lift()
             raise
@@ -510,15 +715,19 @@ class Plotter:
         left_from = self.tip()
         raised = (*left_from[:2], max(left_from[2], PEN_CHANGE_HEIGHT_MM))
         self.follow([Move(left_from, raised, rapid_feed, rapid=True)], upright)
-        self.stop()
-        held = self.shell.send_event("hold")
-        if not held or not self.shell.wait_state("power_on", HOLD_TIMEOUT_S):
-            raise DrawError("the controller did not hold the arm for the pen change")
+        self.hold()
         _swap(self.shell, change.pen, swap_wait)
         self.announcer.announce(change.pen)
         if not ensure_running_mode(self.shell, "world_twist"):
             raise DrawError("could not resume world_twist after the pen change")
         self.follow([Move(raised, left_from, rapid_feed, rapid=True)], upright)
+
+    def hold(self) -> None:
+        """Stop, and have the controller brake the arm at standstill."""
+        self.stop()
+        held = self.shell.send_event("hold")
+        if not held or not self.shell.wait_state("power_on", HOLD_TIMEOUT_S):
+            raise DrawError("the controller did not hold the arm")
 
     def tip(self) -> Vec3:
         """The pen tip now, in paper mm."""
@@ -568,7 +777,7 @@ def _trailing(
     return lean
 
 
-def _tool_table(text: str) -> dict[int, Pen]:
+def tool_table(text: str) -> dict[int, Pen]:
     """Pens by tool number from '; T<n> NAME #RRGGBB' comment lines."""
     tools = {}
     for number, line in enumerate(text.splitlines(), start=1):

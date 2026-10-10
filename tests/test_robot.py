@@ -22,6 +22,18 @@ TILT_RAD = math.radians(15.0)
 ZIGZAG = (
     "G0 Z5\nT1 M6\nG0 X0 Y0\nG1 Z0 F600\nG1 X10 F1500\nG1 X0 Y1\nG1 X10 Y2\nG0 Z5\n"
 )
+TWO_PENS = (
+    "G0 Z5\nT1 M6\nG0 X2 Y0\nG1 Z0 F600\nG1 X10 F1500\nG0 Z5\n"
+    "T4 M6\nG0 X20 Y20\nG1 Z0 F600\nG1 X30 F1500\nG0 Z5\n"
+)
+SHEET_SIZE = (250.0, 200.0)
+# Pen-tip corners as an arm with an inexact model reports them: not quite square.
+MEASURED_CORNERS = [
+    (-156.6, -324.8, -60.2),
+    (-308.2, -141.4, -59.2),
+    (-466.2, -303.6, -60.4),
+    (-296.4, -480.0, -58.5),
+]
 
 
 def parse(body: str) -> list[robot.Step]:
@@ -62,6 +74,123 @@ def test_pen_changes_split_chains_and_rise_to_the_change_height():
     placement = robot.Placement((100.0, 0.0, 20.0), 0.0, 0.0)
     low, high, _ = robot.summarize(segments, placement)
     assert (low[2], high[2]) == (20.0, 20.0 + robot.PEN_CHANGE_HEIGHT_MM)
+
+
+def corners_of(
+    placement: robot.Placement, size: tuple[float, float]
+) -> list[robot.Vec3]:
+    width, height = size
+    rectangle = [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
+    return [
+        tuple(axis * robot.MM_PER_M for axis in placement.to_base((x, y, 0.0)))
+        for x, y in rectangle
+    ]
+
+
+def test_corner_placement_lands_on_every_measured_corner():
+    placement = robot.corner_placement(MEASURED_CORNERS, z_offset=0.0)
+    width, height = placement.size
+    rectangle = [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
+    for (x, y), corner in zip(rectangle, MEASURED_CORNERS):
+        base = placement.to_base((x, y, 0.0))
+        assert tuple(axis * robot.MM_PER_M for axis in base) == pytest.approx(corner)
+
+
+@pytest.mark.parametrize(
+    "point", [(120.0, 100.0, 0.0), (-80.0, 300.0, 45.0)], ids=["on", "beside"]
+)
+def test_corner_placement_finds_base_points_on_the_paper(point):
+    placement = robot.corner_placement(MEASURED_CORNERS, z_offset=-0.5)
+    assert placement.to_paper(placement.to_base(point)) == pytest.approx(point)
+
+
+def test_square_corners_place_like_origin_and_yaw():
+    rigid = robot.Placement((-125.0, -460.0, 30.6), math.radians(20.0), -0.5)
+    level = robot.Placement(rigid.origin, rigid.yaw, 0.0)
+    placement = robot.corner_placement(corners_of(level, SHEET_SIZE), z_offset=-0.5)
+    point = (40.0, 170.0, 3.0)
+    assert placement.to_base(point) == pytest.approx(rigid.to_base(point))
+    assert placement.yaw == pytest.approx(rigid.yaw)
+
+
+@pytest.mark.parametrize(
+    "order", [(0, 1, 3, 2), (0, 3, 2, 1)], ids=["crossed", "clockwise"]
+)
+def test_corners_out_of_order_are_refused(order):
+    corners = [MEASURED_CORNERS[index] for index in order]
+    with pytest.raises(ValueError, match="list them bottom-left, bottom-right"):
+        robot.corner_placement(corners, z_offset=0.0)
+
+
+def test_a_mistyped_corner_height_is_refused():
+    corners = list(MEASURED_CORNERS)
+    x, y, z = corners[2]
+    corners[2] = (x, y, z - 6.0)
+    with pytest.raises(ValueError, match=r"8\.9 mm out of one plane"):
+        robot.corner_placement(corners, z_offset=0.0)
+
+
+def path_of(moves: list[robot.Move]) -> list[tuple[robot.Vec3, robot.Vec3]]:
+    return [(move.start, move.end) for move in moves]
+
+
+def test_one_pen_draws_only_its_strokes_from_above():
+    start = (50.0, 50.0, 40.0)
+    steps = robot.parse_gcode(TOOL_TABLE + TWO_PENS, start, RAPID_MM_MIN)
+    moves = robot.one_pen(steps, 4, start, RAPID_MM_MIN)
+    assert path_of(moves) == [
+        ((50.0, 50.0, 40.0), (20.0, 20.0, 40.0)),
+        ((20.0, 20.0, 40.0), (20.0, 20.0, 5.0)),
+        ((20.0, 20.0, 5.0), (20.0, 20.0, 0.0)),
+        ((20.0, 20.0, 0.0), (30.0, 20.0, 0.0)),
+        ((30.0, 20.0, 0.0), (30.0, 20.0, 5.0)),
+        ((30.0, 20.0, 5.0), (30.0, 20.0, robot.PEN_CHANGE_HEIGHT_MM)),
+    ]
+    assert [move.rapid for move in moves] == [True, True, False, False, True, True]
+
+
+def test_one_pen_rises_before_crossing_from_a_low_start():
+    start = (0.0, 0.0, 0.0)
+    steps = robot.parse_gcode(TOOL_TABLE + TWO_PENS, start, RAPID_MM_MIN)
+    approach = robot.one_pen(steps, 1, start, RAPID_MM_MIN)[:2]
+    assert path_of(approach) == [
+        ((0.0, 0.0, 0.0), (0.0, 0.0, 5.0)),
+        ((0.0, 0.0, 5.0), (2.0, 0.0, 5.0)),
+    ]
+
+
+def test_one_pen_refuses_a_tool_with_nothing_to_draw():
+    steps = parse(TWO_PENS)
+    with pytest.raises(ValueError, match="T2 draws nothing"):
+        robot.one_pen(steps, 2, ORIGIN, RAPID_MM_MIN)
+
+
+def test_gcode_beyond_the_corners_is_refused():
+    robot.check_on_paper(TOOL_TABLE + TWO_PENS, (30.0, 20.0))
+    with pytest.raises(ValueError, match=r"X30 Y20, off the 25\.0 x 100\.0 mm paper"):
+        robot.check_on_paper(TOOL_TABLE + TWO_PENS, (25.0, 100.0))
+
+
+class FaultedShell:
+    def __init__(self):
+        self.events: list[str] = []
+
+    def telemetry(self, timeout_s: float = 1.0) -> dict:
+        return {"controller_state": robot.CONTROLLER_ERROR, "fault": "estop latched"}
+
+    def send_event(self, name: str) -> bool:
+        self.events.append(name)
+        return True
+
+
+def test_draw_refuses_a_controller_in_error_instead_of_clearing_it():
+    shell = FaultedShell()
+    placement = robot.Placement(ORIGIN, 0.0, 0.0)
+    with pytest.raises(robot.DrawError, match="estop latched"):
+        robot.draw(
+            shell, TOOL_TABLE + ZIGZAG, placement, PEN_OFFSET_MM, RAPID_MM_MIN, 0.0, 0.0
+        )
+    assert shell.events == []
 
 
 def receive(listener: zmq.Socket, announcer: robot.PenAnnouncer) -> dict:
@@ -319,8 +448,34 @@ class FakeArm:
         return True
 
 
+class HoldableArm(FakeArm):
+    """A FakeArm whose controller accepts HOLD and reports it reached."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.events: list[str] = []
+
+    def send_event(self, name: str) -> bool:
+        self.events.append(name)
+        return True
+
+    def wait_state(
+        self, state_name: str, timeout_s: float, require_motion: bool = False
+    ) -> bool:
+        return state_name == "power_on"
+
+
 class SilentAnnouncer:
+    def __init__(self):
+        self.pens: list[pens.Pen] = []
+
+    def announce(self, pen: pens.Pen) -> None:
+        self.pens.append(pen)
+
     def tick(self) -> None:
+        pass
+
+    def close(self) -> None:
         pass
 
 
@@ -347,6 +502,26 @@ def test_follow_keeps_the_tip_on_the_stroke(monkeypatch, stall_s, goal):
     assert worst < 1.0
     assert plotter.tip() == pytest.approx((40.0, 0.0, 0.0), abs=0.5)
     assert math.hypot(*rotation_error(arm.quat, goal)) < robot.SETTLE_TOLERANCE_RAD
+
+
+def test_one_pen_run_with_the_tcp_at_the_tip_ends_raised_and_held(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(robot, "time", clock)
+    monkeypatch.setattr(robot, "ensure_running_mode", lambda shell, mode: True)
+    announcer = SilentAnnouncer()
+    monkeypatch.setattr(robot, "PenAnnouncer", lambda: announcer)
+    placement = robot.corner_placement(MEASURED_CORNERS, z_offset=0.0)
+    start = placement.to_base((0.0, 0.0, 30.0))
+    arm = HoldableArm(clock, (*start, *VERTICAL), stall_on_read=0, stall_s=0.0)
+
+    worst = robot.draw(
+        arm, TOOL_TABLE + TWO_PENS, placement, 0.0, RAPID_MM_MIN, 0.0, None, 4
+    )
+
+    assert worst < 1.0
+    assert (arm.events, announcer.pens) == (["hold"], [BLACK])
+    tip = placement.to_paper(arm.position)
+    assert tip == pytest.approx((30.0, 20.0, robot.PEN_CHANGE_HEIGHT_MM), abs=0.5)
 
 
 def test_swap_needs_a_terminal_or_a_wait(monkeypatch):

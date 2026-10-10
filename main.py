@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import logging
 import math
 import sys
@@ -8,6 +9,10 @@ from xml.etree.ElementTree import ParseError
 import prepare_owl69_model
 from robot_interface import Shell, add_endpoint_arguments, resolve_endpoints
 from svg_to_gcode import gcode, image, pens, robot, viewer
+
+CORNER_METAVARS = tuple(
+    f"{corner}{axis}" for corner in ("BL", "BR", "TR", "TL") for axis in "XYZ"
+)
 
 
 def finite(text: str) -> float:
@@ -133,23 +138,49 @@ def run_gcode(args: argparse.Namespace) -> int:
 
 def run_teach(args: argparse.Namespace) -> int:
     shell = Shell(*resolve_endpoints(args))
-    robot.check_tip_link(shell)
+    if args.pen_offset:
+        robot.check_tip_link(shell)
     x, y, z = robot.pen_tip_position(shell, args.pen_offset)
     print(f"--origin {x:.1f} {y:.1f} {z:.1f}")
     return 0
 
 
+def paper_placement(
+    args: argparse.Namespace, z_offset: float
+) -> tuple[robot.Placement, tuple[float, float] | None]:
+    """Where the paper lies, and its size when its corners were given."""
+    if args.corners is None:
+        yaw = math.radians(args.yaw or 0.0)
+        return robot.Placement(tuple(args.origin), yaw, z_offset), None
+    if args.yaw is not None:
+        raise ValueError("--yaw goes with --origin; --corners set the paper's yaw")
+    corners = list(itertools.batched(args.corners, 3))
+    placement = robot.corner_placement(corners, z_offset)
+    width, height = placement.size
+    angles = ", ".join(f"{angle:.0f}" for angle in robot.corner_angles(corners))
+    heights = [corner[2] for corner in corners]
+    print(
+        f"paper {width:.1f} x {height:.1f} mm between the corners; they meet at "
+        f"{angles} deg and sit {min(heights):.1f} .. {max(heights):.1f} mm high"
+    )
+    return placement, placement.size
+
+
 def run_draw(args: argparse.Namespace) -> int:
     text = args.gcode.read_text()
-    placement = robot.Placement(
-        tuple(args.origin), math.radians(args.yaw), args.z_offset
-    )
+    placement, size = paper_placement(args, args.z_offset)
+    if size is not None:
+        robot.check_on_paper(text, size)
+    if args.tool is not None:
+        pen = robot.tool_table(text).get(args.tool)
+        print(f"drawing only T{args.tool}" + (f" {pen.name} {pen.hex}" if pen else ""))
     if args.dry_run:
         # The arm's start pose is unknown offline, so begin at the first XY travel.
         steps = robot.parse_gcode(text, (0.0, 0.0, 0.0), args.rapid)
         moves = [step for step in steps if isinstance(step, robot.Move)]
         start = next((m.end for m in moves if m.start[:2] != m.end[:2]), moves[0].start)
-        steps = robot.parse_gcode(text, start, args.rapid)
+        steps = robot.steps_to_draw(text, start, args.rapid, args.tool)
+        moves = [step for step in steps if isinstance(step, robot.Move)]
         segments, hops = robot.plan_motion(steps, args.tilt)
         low, high, seconds = robot.summarize(segments, placement)
         for axis, lo, hi in zip("xyz", low, high):
@@ -170,19 +201,21 @@ def run_draw(args: argparse.Namespace) -> int:
         args.rapid,
         args.tilt,
         args.swap_wait,
+        args.tool,
     )
     print(f"done; largest pen-tip error while drawing {worst:.2f} mm")
     return 0
 
 
 def run_view(args: argparse.Namespace) -> int:
-    placement = robot.Placement(tuple(args.origin), math.radians(args.yaw), 0.0)
+    placement, size = paper_placement(args, 0.0)
+    paper = size or args.paper
     pub, cmd = resolve_endpoints(args)
     served = prepare_owl69_model.fetch_served_model(cmd)
     bundle = prepare_owl69_model.prepare_from_controller(cmd, served=served)
     urdf, _ = served
-    model = viewer.build_scene(bundle, urdf, args.paper, placement, args.pen_offset)
-    viewer.show(Shell(pub, cmd), model, placement, args.paper)
+    model = viewer.build_scene(bundle, urdf, paper, placement, args.pen_offset)
+    viewer.show(Shell(pub, cmd), model, placement, paper)
     return 0
 
 
@@ -309,7 +342,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--pen-offset",
         type=finite,
         required=True,
-        help="pen tip distance beyond the gripper's target_frame along its +X, mm",
+        help="pen tip distance beyond the gripper's target_frame along its +X, mm; "
+        "0 when the controller's TCP is the pen tip",
     )
 
     teach = commands.add_parser(
@@ -321,19 +355,27 @@ def build_parser() -> argparse.ArgumentParser:
     teach.set_defaults(handler=run_teach)
 
     placement = argparse.ArgumentParser(add_help=False)
-    placement.add_argument(
+    paper_pose = placement.add_mutually_exclusive_group(required=True)
+    paper_pose.add_argument(
         "--origin",
         type=finite,
         nargs=3,
-        required=True,
         metavar=("X", "Y", "Z"),
         help="paper bottom-left corner on its surface, base frame, mm",
+    )
+    paper_pose.add_argument(
+        "--corners",
+        type=finite,
+        nargs=12,
+        metavar=CORNER_METAVARS,
+        help="the paper's bottom-left, bottom-right, top-right and top-left corners "
+        "on its surface, base frame, mm; the drawing is stretched to land on each",
     )
     placement.add_argument(
         "--yaw",
         type=finite,
-        default=0.0,
-        help="angle of the paper's X edge from base X, degrees",
+        help="with --origin, the angle of the paper's X edge from base X, degrees "
+        "(default 0)",
     )
 
     draw = commands.add_parser(
@@ -361,6 +403,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=non_negative,
         metavar="SECONDS",
         help="wait this long at each pen change instead of asking for Enter",
+    )
+    draw.add_argument(
+        "--tool",
+        type=positive_int,
+        help="draw only this tool's strokes, with its pen already in the gripper: no "
+        f"pen change, and the arm ends held {robot.PEN_CHANGE_HEIGHT_MM:g} mm above "
+        "the paper for the next swap",
     )
     draw.add_argument(
         "--dry-run",
