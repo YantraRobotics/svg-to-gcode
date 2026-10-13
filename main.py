@@ -9,7 +9,7 @@ from xml.etree.ElementTree import ParseError
 
 import prepare_owl69_model
 from robot_interface import Shell, add_endpoint_arguments, resolve_endpoints
-from svg_to_gcode import gcode, image, pens, robot, viewer
+from svg_to_gcode import gcode, image, pens, robot, server, viewer
 
 CORNER_METAVARS = tuple(
     f"{corner}{axis}" for corner in ("BL", "BR", "TR", "TL") for axis in "XYZ"
@@ -66,6 +66,15 @@ def non_negative_int(text: str) -> int:
     value = int(text)
     if value < 0:
         raise argparse.ArgumentTypeError(f"{text} must not be negative")
+    return value
+
+
+def port_number(text: str) -> int:
+    value = int(text)
+    if not server.MIN_PORT <= value <= server.MAX_PORT:
+        raise argparse.ArgumentTypeError(
+            f"{text} must be between {server.MIN_PORT} and {server.MAX_PORT}"
+        )
     return value
 
 
@@ -277,11 +286,29 @@ def run_storyboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_serve(args: argparse.Namespace) -> int:
+    port = getattr(args, "port_flag", None) or getattr(args, "port", None)
+    if port is None:
+        raise ValueError("pass a port number, e.g. serve 8000 or --port 8000")
+    return server.serve(args.bind, port)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Draw SVG images on paper with the Owl 6.9 arm."
     )
-    commands = parser.add_subparsers(required=True)
+    parser.add_argument(
+        "--port",
+        "-p",
+        type=port_number,
+        help="run the HTTP conversion server on this TCP port",
+    )
+    parser.add_argument(
+        "--bind",
+        default=server.DEFAULT_HOST,
+        help=f"address to bind when serving (default {server.DEFAULT_HOST})",
+    )
+    commands = parser.add_subparsers(dest="command")
 
     paper = argparse.ArgumentParser(add_help=False)
     paper.add_argument(
@@ -668,14 +695,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="estimated manual swap time per pen load",
     )
     storyboard.set_defaults(handler=run_storyboard)
+
+    serve = commands.add_parser(
+        "serve",
+        help="run an HTTP server for image-to-SVG, SVG-to-G-code, and robot drawing",
+    )
+    serve.add_argument(
+        "port", nargs="?", type=port_number, help="TCP port to listen on"
+    )
+    serve.add_argument(
+        "--port",
+        "-p",
+        dest="port_flag",
+        type=port_number,
+        help="TCP port to listen on",
+    )
+    serve.add_argument(
+        "--bind",
+        default=server.DEFAULT_HOST,
+        help=f"address to bind (default {server.DEFAULT_HOST})",
+    )
+    serve.set_defaults(handler=run_serve)
     return parser
 
 
 def main() -> int:
     logging.basicConfig(format="%(levelname)s: %(message)s")
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    handler = getattr(args, "handler", None)
+    if handler is None:
+        if args.port is None:
+            parser.error("a command or --port is required")
+        handler = run_serve
     try:
-        return args.handler(args)
+        return handler(args)
     except (OSError, ParseError, RuntimeError, ValueError, robot.DrawError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
