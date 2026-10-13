@@ -1,0 +1,45 @@
+{
+  "window_id": 7,
+  "window_sha256": "58d5d202fe4ce4e8416d213cfb94f722baae1cd16ac28ab792cb4151235e15e8",
+  "base_revision": 6,
+  "summary": "A calendar launches a paper plane toward a target",
+  "additions": [
+    {
+      "id": "launch-ambition",
+      "meaning": "A calendar launches a paper plane toward a target",
+      "evidence": "shipping these in June. We\u2019re announcing",
+      "box": [
+        515,
+        770,
+        210,
+        200
+      ],
+      "strokes": [
+        {
+          "pen": "black",
+          "d": "M3 43 L39 39 L41 83 L5 86 Z M4 51 L39 47 M12 35 L13 46 M28 33 L29 44"
+        },
+        {
+          "pen": "blue",
+          "d": "M45 27 L82 9 L71 41 L62 29 L45 27 Z M62 29 L82 9"
+        },
+        {
+          "pen": "blue",
+          "d": "M39 41 Q54 45 57 32"
+        },
+        {
+          "pen": "black",
+          "d": "M 98,72 C 98,82.49341025 89.49341025,91 79,91 C 68.50658975,91 60,82.49341025 60,72 C 60,61.50658975 68.50658975,53 79,53 C 89.49341025,53 98,61.50658975 98,72 Z"
+        },
+        {
+          "pen": "green",
+          "d": "M 90,72 C 90,78.07513225 85.07513225,83 79,83 C 72.92486775,83 68,78.07513225 68,72 C 68,65.92486775 72.92486775,61 79,61 C 85.07513225,61 90,65.92486775 90,72 Z"
+        },
+        {
+          "pen": "red",
+          "d": "M96 52 L79 72 M79 65 L79 72 L86 71"
+        }
+      ]
+    }
+  ]
+}

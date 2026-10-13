@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ten-minute doodle replay</title>
+<style>
+  :root { color-scheme: light; font-family: system-ui, sans-serif; color: #231f20; background: #efeee9; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; }
+  main { max-width: 1340px; margin: auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; }
+  h1 { font-size: 23px; font-weight: 600; margin: 0 0 5px; }
+  p { line-height: 1.5; }
+  .note { color: #625e57; font-size: 14px; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 24px; margin-top: 20px; }
+  .paper { position: relative; aspect-ratio: 1; background: white; }
+  .paper svg { display: block; width: 100%; height: 100%; }
+  .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 16px 0; }
+  button, select { font: inherit; color: inherit; background: white; border: 1px solid #b9b5ac; border-radius: 6px; padding: 9px 13px; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  input[type=range] { width: 100%; accent-color: #1b4f9c; }
+  aside { padding: 0 5px; }
+  h2 { font-size: 18px; margin-bottom: 8px; }
+  dt { color: #625e57; margin-top: 12px; font-size: 13px; }
+  dd { margin: 2px 0 0; }
+  li { margin: 9px 0; line-height: 1.4; }
+  summary { cursor: pointer; margin: 18px 0 10px; }
+  #transcript { max-height: 230px; overflow-y: auto; background: white; padding: 12px; font-size: 13px; }
+  a { color: #1b4f9c; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; margin-top: 12px; }
+  .swatch { display: inline-block; width: 16px; height: 3px; vertical-align: middle; margin-right: 5px; }
+  @media(max-width: 850px) { .layout { grid-template-columns: 1fr; } header { display: block; } body { padding: 14px; } }
+  @media(prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+</style>
+<main>
+  <header><div><h1 id="title">One canvas. New ink every few minutes.</h1><div class="note" id="mode"></div></div>
+    <a href="canvas.png">Final canvas</a></header>
+  <div class="layout">
+    <section>
+      <div class="paper"><svg id="canvas" viewBox="0 0 1000 1000" preserveAspectRatio="none" role="img" aria-label="Doodles accumulated from the transcript, drawn with red, green, blue and black pens; no text on the paper"></svg></div>
+      <div class="tools">
+        <button id="previous" type="button">Previous</button><button id="play" type="button">Play batches</button><button id="next" type="button">Next</button>
+        <label><input id="only" type="checkbox"> New ink only</label>
+        <label>View <select id="view"><option value="complete">Completed batch</option><option value="drawing">Stroke order</option></select></label>
+      </div>
+      <label for="time">Transcript cutoff: <strong id="clock">00:00</strong></label>
+      <input id="time" type="range" min="0" value="0" step="1" aria-label="Transcript batch">
+      <div class="legend"><span><i class="swatch" style="background:#231f20"></i>Structure</span><span><i class="swatch" style="background:#1b4f9c"></i>Movement / information</span><span><i class="swatch" style="background:#00843d"></i>Connection / outcome</span><span><i class="swatch" style="background:#d52b1e"></i>Focus / gesture</span></div>
+    </section>
+    <aside aria-live="polite">
+      <h2 id="heading">Listening</h2>
+      <p id="status">The canvas stays empty until the first transcript window closes.</p>
+      <ul id="ideas"></ul>
+      <dl><dt>New / total doodles</dt><dd id="count">0 / 0</dd><dt>Estimated motion + allowances</dt><dd id="duration">—</dd><dt>Pen loads in this batch</dt><dd id="pens">—</dd><dt>Previous ink</dt><dd>Locked. Never moved or regenerated.</dd></dl>
+      <p class="note">Playback accelerates time. Stroke order shows the pen-group order, not a robot trajectory simulation. Counts and notes here stay off the canvas.</p>
+      <p id="downloads"></p>
+      <details><summary>Speech received in this window</summary><div id="transcript">No speech committed yet.</div></details>
+    </aside>
+  </div>
+</main>
+<script>
+const session = __SESSION_DATA__;
+const byId = id => document.getElementById(id);
+const slider = byId('time');
+slider.max = session.batches.length;
+byId('title').textContent = `One canvas. New ink every ${session.interval_seconds / 60} minutes.`;
+byId('mode').textContent = `${session.mode} · ${session.timing}`;
+document.querySelector('.paper').style.aspectRatio = session.paper_mm.join(' / ');
+let playback = null, animation = null;
+const clock = seconds => `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;
+function pause() { clearInterval(playback); playback = null; byId('play').textContent = 'Play batches'; }
+function render() {
+  clearInterval(animation);
+  const index = Number(slider.value), selected = session.batches[index-1];
+  const shown = byId('only').checked ? (selected ? [selected] : []) : session.batches.slice(0,index);
+  const canvas = byId('canvas'); canvas.replaceChildren();
+  for (const batch of shown) {
+    const doc = new DOMParser().parseFromString(batch.svg,'image/svg+xml');
+    for (const child of [...doc.documentElement.children]) canvas.appendChild(document.importNode(child,true));
+  }
+  byId('clock').textContent = clock(selected ? selected.window.end_seconds : 0);
+  byId('heading').textContent = selected ? `Batch ${index}${selected.window.partial ? ' · final partial window' : ''}` : 'Listening';
+  byId('status').textContent = selected ? `${clock(selected.window.start_seconds)}–${clock(selected.window.end_seconds)} received. Estimated draw slot ${clock(selected.draw_starts_at)}–${clock(selected.draw_finishes_at)}${selected.wait_seconds ? ' (waits for previous batch)' : ''}. The microphone keeps recording.` : 'The canvas stays empty until the first transcript window closes.';
+  byId('ideas').replaceChildren();
+  for (const item of selected ? selected.additions : []) { const li = document.createElement('li'); li.textContent = item.meaning; byId('ideas').appendChild(li); }
+  const total = session.batches.slice(0,index).reduce((n,b)=>n+b.additions.length,0);
+  byId('count').textContent = `${selected ? selected.additions.length : 0} / ${total}`;
+  byId('duration').textContent = selected ? `${selected.estimated_seconds.toFixed(0)} seconds (estimate)` : '—';
+  byId('pens').textContent = selected ? selected.pen_loads : '—';
+  byId('transcript').textContent = selected ? selected.window.text : 'No speech committed yet.';
+  byId('downloads').replaceChildren();
+  if (selected) {
+    const a = document.createElement('a'); a.href = `${String(index).padStart(2,'0')}-additions.gcode`; a.textContent = 'This batch’s new G-code'; byId('downloads').appendChild(a);
+  }
+  byId('previous').disabled = index === 0; byId('next').disabled = index === session.batches.length;
+  if (selected && byId('view').value === 'drawing') {
+    const order = ['#231F20','#1B4F9C','#00843D','#D52B1E'];
+    const current = selected.additions.flatMap(item => [...canvas.querySelectorAll(`#${item.id} path`)]);
+    current.sort((a,b)=>order.indexOf(a.getAttribute('stroke'))-order.indexOf(b.getAttribute('stroke')));
+    current.forEach(p=>p.style.visibility='hidden');
+    let n=0; animation=setInterval(()=>{ if(n>=current.length){clearInterval(animation);return;} current[n++].style.visibility='visible'; },60);
+  }
+}
+byId('next').onclick = () => { pause(); slider.value=Math.min(Number(slider.value)+1,session.batches.length); render(); };
+byId('previous').onclick = () => { pause(); slider.value=Math.max(Number(slider.value)-1,0); render(); };
+slider.oninput = () => { pause(); render(); };
+byId('only').onchange = render; byId('view').onchange = render;
+byId('play').onclick = () => {
+  if(playback){pause();return;}
+  if(Number(slider.value)>=session.batches.length)slider.value=0;
+  byId('play').textContent='Pause';
+  playback=setInterval(()=>{slider.value=Number(slider.value)+1;render();if(Number(slider.value)>=session.batches.length)pause();},4000);
+};
+render();
+</script>
+</html>

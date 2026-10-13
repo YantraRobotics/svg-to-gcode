@@ -30,6 +30,58 @@ uv run main.py draw output/golden-gate.gcode --pen-offset 40 --origin -125 -460 
 
 Every command has `--help`.
 
+## Doodle a talk every few minutes
+
+`talk` starts from the transcript. Every `--interval-minutes` of speech (default 10),
+Codex reads only that window, sketches up to `--doodles` line drawings in black, blue,
+green and red, and local checks keep the strokes that quote the window, stay inside
+their square and fit the paper. Each batch is new G-code drawn once; earlier ink never
+moves. It runs the signed-in Codex CLI (`codex login`); no API key is needed.
+
+Rehearse on a transcript without waiting, preview only:
+
+```bash
+uv run main.py talk output/rehearsal --transcript test.txt --paper 250x250
+```
+
+Open `output/rehearsal/index.html` to step through the batches. At the talk, listen
+to the microphone ([setup](docs/live-doodles.md#microphone-setup-on-macos)) and draw:
+
+```bash
+uv run --extra live main.py talk output/keynote --whisper-model output/models/ggml-base.en.bin --paper 250x250 --execute --pen-offset 40 --origin -125 -460 30.6
+```
+
+The arm asks for Enter at each pen change; `--swap-wait SECONDS` waits instead.
+Ctrl-C while it is listening ends the talk and doodles the last part; Ctrl-C at any
+other time stops.
+
+## Live voice doodles
+
+For the **ten-minute, text-free, red/green/blue/black design**, see
+[the incremental architecture and keyless replay](docs/ten-minute-doodle-architecture.md).
+Run the Codex-authored `test.txt` example with:
+
+```bash
+uv run main.py storyboard test.txt output/my-ten-minute-replay --paper 250x250
+```
+
+Open the generated `index.html` to step through additions. This command exports
+individual batch G-code and does not move the arm.
+
+`live` listens to a microphone, a recorded WAV, or a transcript and adds small
+vector doodles to a persistent canvas. It runs locally with whisper.cpp and an
+optional Ollama model; no paid API or API key is required. Preview is the default.
+
+Try the included transcript without downloading any models:
+
+```bash
+uv run main.py live output/live-demo --transcript examples/talk.txt --chunk-seconds 1 --preview-speed 100
+```
+
+Open `output/live-demo/preview.html` to see the canvas. Use a new output directory
+for each session. See [the live setup guide](docs/live-doodles.md) for microphone
+setup, free local models, recorded audio, and robot/simulator output.
+
 ### Styles
 
 `image` draws in one of three styles:

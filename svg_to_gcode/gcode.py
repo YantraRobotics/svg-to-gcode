@@ -3,6 +3,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import svgelements as svg
 
 from svg_to_gcode.hatch import hatch, ring_area
@@ -81,6 +82,8 @@ def svg_to_layers(
     hatch_angle degrees and each later pen's 180/len(pens) degrees further round, so
     fills that overlap to mix colours cross-hatch instead of retracing each other.
     Fills are outlined when outline is set; strokes are drawn along their paths.
+    Each pen's strokes run nearest first (order_strokes) from where the pen before
+    it stopped, the first pen from the paper's origin.
     """
     shapes = _load_shapes(svg_file, pens)
     bounds = _bounds([shape.path for shape in shapes])
@@ -104,30 +107,73 @@ def svg_to_layers(
                 ]
         if shape.stroke is not None:
             strokes[shape.stroke] += [line for line in polylines if len(line) > 1]
-    layers = [
-        Layer(tool, pen, strokes[pen])
-        for tool, pen in enumerate(pens, start=1)
-        if strokes[pen]
-    ]
+    layers = []
+    position = (0.0, 0.0)
+    for tool, pen in enumerate(pens, start=1):
+        if strokes[pen]:
+            ordered = order_strokes(strokes[pen], position)
+            layers.append(Layer(tool, pen, ordered))
+            position = ordered[-1][-1]
     if not layers:
         raise ValueError(f"{svg_file} has nothing to draw with these pens")
     return layers
 
 
+def order_strokes(strokes: list[Stroke], start: Point) -> list[Stroke]:
+    """The strokes in the order a greedy nearest-neighbour tour from start visits them.
+
+    The pen enters an open stroke at its nearer end, reversing it if need be, and a
+    closed ring at its nearest point, so it travels less between strokes.
+    """
+    closed = [len(stroke) > 2 and stroke[0] == stroke[-1] for stroke in strokes]
+    entries = [
+        stroke[:-1] if ring else [stroke[0], stroke[-1]]
+        for stroke, ring in zip(strokes, closed)
+    ]
+    points = np.array([point for entry in entries for point in entry])
+    bounds = np.cumsum([0, *(len(entry) for entry in entries)])
+    unvisited = np.ones(len(points), dtype=bool)
+    position = start
+    ordered = []
+    for _ in strokes:
+        gaps = np.where(unvisited, np.hypot(*(points - position).T), np.inf)
+        nearest = int(np.argmin(gaps))
+        index = int(np.searchsorted(bounds, nearest, side="right")) - 1
+        entry = nearest - bounds[index]
+        unvisited[bounds[index] : bounds[index + 1]] = False
+        stroke = strokes[index]
+        if closed[index]:
+            ring = stroke[:-1]
+            stroke = [*ring[entry:], *ring[:entry], ring[entry]]
+        elif entry:
+            stroke = stroke[::-1]
+        ordered.append(stroke)
+        position = stroke[-1]
+    return ordered
+
+
 def to_gcode(layers: list[Layer], feed: float, lift: float) -> str:
-    """G-code drawing each layer after a T<n> M6 pen change, listing the pens in comments."""
+    """G-code drawing each layer after a T<n> M6 pen change, listing the pens in comments.
+
+    The pen stays down into a stroke that starts where the one before it ended.
+    """
     lines = ["G21", "G90"]
     lines += [f"; T{layer.tool} {layer.pen.name} {layer.pen.hex}" for layer in layers]
     lines.append(f"G0 Z{lift:.3f}")
     for layer in layers:
         lines.append(f"T{layer.tool} M6")
+        pen_down_at = None
         for (start_x, start_y), *rest in layer.strokes:
-            lines.append(f"G0 X{start_x:.3f} Y{start_y:.3f}")
-            lines.append(f"G1 Z0.000 F{PLUNGE_FEED_MM_MIN:g}")
+            if (start_x, start_y) != pen_down_at:
+                if pen_down_at is not None:
+                    lines.append(f"G0 Z{lift:.3f}")
+                lines.append(f"G0 X{start_x:.3f} Y{start_y:.3f}")
+                lines.append(f"G1 Z0.000 F{PLUNGE_FEED_MM_MIN:g}")
             for index, (x, y) in enumerate(rest):
                 feed_word = f" F{feed:g}" if index == 0 else ""
                 lines.append(f"G1 X{x:.3f} Y{y:.3f}{feed_word}")
-            lines.append(f"G0 Z{lift:.3f}")
+            pen_down_at = (x, y) if rest else (start_x, start_y)
+        lines.append(f"G0 Z{lift:.3f}")
     lines.append("M2")
     return "\n".join(lines) + "\n"
 

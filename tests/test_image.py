@@ -281,3 +281,62 @@ def test_one_line_lifts_only_to_jump_between_patches(tmp_path, breaks, strokes):
 def test_blank_image_has_no_line_to_draw(tmp_path):
     with pytest.raises(ValueError, match="nothing to draw"):
         one_line_drawing(tmp_path, Image.new("RGB", (CARD_PX, CARD_PX), "white"), 3)
+
+
+def test_thinning_leaves_one_pixel_along_the_middle():
+    mask = np.zeros((30, 80), dtype=bool)
+    mask[10:19, 10:70] = True
+
+    middle = image.thin(mask)[:, 20:60]
+
+    assert (middle.sum(axis=0) == 1).all()
+    assert set(np.nonzero(middle)[0]) <= {13, 14, 15}
+
+
+def test_centerline_traces_a_ring_once_along_its_middle():
+    rows, columns = np.mgrid[:80, :80]
+    radius = np.hypot(columns - 39.5, rows - 39.5)
+
+    (line,) = image.centerlines((radius >= 20) & (radius <= 28))
+
+    assert (line[0] == line[-1]).all()
+    assert np.hypot(line[:, 0] - 40, line[:, 1] - 40) == pytest.approx(24, abs=1.0)
+
+
+def test_centerline_keeps_the_short_bar_of_a_bold_letter():
+    letter_t = np.zeros((60, 50), dtype=bool)
+    letter_t[10:18, 12:35] = True
+    letter_t[10:52, 19:27] = True
+
+    lines = image.centerlines(letter_t)
+
+    ends = np.array([point for line in lines for point in (line[0], line[-1])])
+    stem_left, stem_right = 19, 27
+    assert ends[:, 0].min() < stem_left
+    assert ends[:, 0].max() > stem_right
+    assert ends[:, 1].max() > 47
+
+
+def test_centerline_draws_each_pens_lines_once_along_their_middle(tmp_path):
+    picture = Image.new("RGB", (CARD_PX, CARD_PX), "white")
+    draw = ImageDraw.Draw(picture)
+    draw.line([(30, 50), (170, 50)], fill=BLACK.rgb, width=9)
+    draw.line([(30, 120), (170, 120)], fill=CYAN.rgb, width=5)
+    image_file = tmp_path / "picture.png"
+    picture.save(image_file)
+
+    svg = image.image_to_centerline(image_file, CMYK, CARD_PX, 1, 3.0)
+
+    found = {
+        layer.get(LABEL): [
+            np.array(re.findall(r"(-?[\d.]+),(-?[\d.]+)", subpath), dtype=float)
+            for subpath in layer.find(f"{{{image.SVG_NS}}}path").get("d").split("M")
+            if subpath.strip()
+        ]
+        for layer in ET.fromstring(svg).iter(f"{{{image.SVG_NS}}}g")
+    }
+    assert list(found) == ["cyan", "black"]
+    for (line,), row in zip(found.values(), (120.5, 50.5)):
+        assert line[:, 1] == pytest.approx(row, abs=1.0)
+        assert line[:, 0].min() < 35
+        assert line[:, 0].max() > 165

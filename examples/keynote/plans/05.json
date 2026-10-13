@@ -1,0 +1,45 @@
+{
+  "window_id": 5,
+  "window_sha256": "bd44f18975cbf131b537d3e5f92a5b1b04949187dc5b0bb39ad3a39f5ecb915a",
+  "base_revision": 4,
+  "summary": "A map route becomes steam from the coffee you found",
+  "additions": [
+    {
+      "id": "map-coffee",
+      "meaning": "A map route becomes steam from the coffee you found",
+      "evidence": "Starbucks, right? Starbucks, so I\u2019m goin",
+      "box": [
+        25,
+        770,
+        210,
+        200
+      ],
+      "strokes": [
+        {
+          "pen": "black",
+          "d": "M8 52 L34 43 L62 53 L90 44 L96 86 L66 95 L38 85 L12 95 Z M34 43 L38 85 M62 53 L66 95"
+        },
+        {
+          "pen": "blue",
+          "d": "M21 81 C16 53 45 79 49 56 C52 42 67 48 75 30"
+        },
+        {
+          "pen": "black",
+          "d": "M62 16 L88 16 Q89 39 76 39 Q63 39 62 16 M88 19 Q100 16 94 29 L87 30"
+        },
+        {
+          "pen": "red",
+          "d": "M70 11 C63 6 76 5 71 0 M80 11 C73 7 86 4 80 0"
+        },
+        {
+          "pen": "green",
+          "d": "M19 67 Q5 51 19 48 Q32 52 19 67"
+        },
+        {
+          "pen": "green",
+          "d": "M 21,54 C 21,55.1045695 20.1045695,56 19,56 C 17.8954305,56 17,55.1045695 17,54 C 17,52.8954305 17.8954305,52 19,52 C 20.1045695,52 21,52.8954305 21,54 Z"
+        }
+      ]
+    }
+  ]
+}

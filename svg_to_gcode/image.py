@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 from contourpy import FillType, contour_generator
 from PIL import Image, ImageFilter, ImageOps
+from scipy import ndimage
 
 from svg_to_gcode import one_line
 from svg_to_gcode.hatch import ring_area
@@ -59,6 +60,22 @@ ONE_LINE_SEED = 0
 # One-line drawings sample tone this many times finer than the pen's width, so the
 # line can follow edges finer than itself.
 ONE_LINE_DETAIL = 2
+# A skeleton branch no longer than this many times the stroke's half-width where it
+# joins is a bump on the stroke's edge, so it is pruned. Corners of a stroke, the
+# bars of small letters and arrowheads branch further out, and stay.
+SPUR_RATIO = 1.0
+PRUNE_ROUNDS = 2
+# A junction keeps this many of its branches even when all are short, so a small
+# glyph thins to a line rather than a dot.
+KEPT_BRANCHES = 2
+# Centre lines are averaged over this many pixels either side of each point, which
+# irons out the staircase a one-pixel line takes across the grid.
+CENTERLINE_SMOOTHING_PX = 2
+# A lone skeleton pixel, the middle of a dot, is drawn as a stroke this long.
+DOT_PX = 0.5
+EIGHT_CONNECTED = np.ones((3, 3), dtype=bool)
+# A pixel's neighbours as (row, column) steps, clockwise from north.
+NEIGHBOURS = ((-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1))
 
 ET.register_namespace("", SVG_NS)
 ET.register_namespace("inkscape", INKSCAPE_NS)
@@ -187,6 +204,131 @@ def image_to_one_line(
     return ET.tostring(svg, encoding="unicode")
 
 
+def image_to_centerline(
+    image_file: Path, pens: list[Pen], resolution: int, smoothing: int, speckle: float
+) -> str:
+    """An SVG with one Inkscape layer per pen, drawing its lines once along their middle.
+
+    For line art and lettering. The image is shrunk to at most resolution px on its
+    long side, each pixel goes to paper white or the nearest pen, a smoothing x
+    smoothing mode filter votes away stray pixels, and regions or holes under
+    speckle x speckle px are dropped. Each pen's regions are then thinned to their
+    centre lines, so the pen draws a line where the image has one instead of
+    outlining it.
+    """
+    labels = posterize(load_image(image_file, resolution), pens, smoothing)
+    height, width = labels.shape
+    svg = _svg(width, height)
+    _add_paper(svg, width, height)
+    for index, pen in enumerate(pens, start=1):
+        lines = centerlines(despeckle(labels == index, speckle * speckle))
+        if lines:
+            _add_layer(
+                svg,
+                pen,
+                {
+                    "d": polyline_data(lines),
+                    "fill": "none",
+                    "stroke": pen.hex,
+                    "stroke-width": "2",
+                    "stroke-linecap": "round",
+                    "stroke-linejoin": "round",
+                },
+            )
+    if svg.find(f"{{{SVG_NS}}}g") is None:
+        raise ValueError(f"{image_file} has nothing to draw: it is all paper white")
+    return ET.tostring(svg, encoding="unicode")
+
+
+def despeckle(mask: np.ndarray, min_area: float) -> np.ndarray:
+    """The mask without regions, or holes in them, smaller than min_area px."""
+    regions, _ = ndimage.label(mask, structure=EIGHT_CONNECTED)
+    kept = np.bincount(regions.ravel()) >= min_area
+    kept[0] = False
+    mask = kept[regions]
+    holes, _ = ndimage.label(~mask)
+    small = np.bincount(holes.ravel()) < min_area
+    small[0] = False
+    small[np.unique([holes[0], holes[-1]])] = False
+    small[np.unique([holes[:, 0], holes[:, -1]])] = False
+    return mask | small[holes]
+
+
+def thin(mask: np.ndarray) -> np.ndarray:
+    """The mask thinned to lines one pixel wide along its middle (Guo and Hall, 1989)."""
+    image = np.pad(mask, 1).astype(np.uint8)
+    height, width = image.shape
+    centre = image[1:-1, 1:-1]
+    while True:
+        thinned = False
+        for first_pass in (True, False):
+            p2, p3, p4, p5, p6, p7, p8, p9 = (
+                image[1 + row : height - 1 + row, 1 + column : width - 1 + column]
+                for row, column in NEIGHBOURS
+            )
+            crossings = (
+                ((p2 ^ 1) & (p3 | p4))
+                + ((p4 ^ 1) & (p5 | p6))
+                + ((p6 ^ 1) & (p7 | p8))
+                + ((p8 ^ 1) & (p9 | p2))
+            )
+            occupied = np.minimum(
+                (p9 | p2) + (p3 | p4) + (p5 | p6) + (p7 | p8),
+                (p2 | p3) + (p4 | p5) + (p6 | p7) + (p8 | p9),
+            )
+            if first_pass:
+                facing = (p6 | p7 | (p9 ^ 1)) & p8
+            else:
+                facing = (p2 | p3 | (p5 ^ 1)) & p4
+            removable = (
+                (centre == 1)
+                & (crossings == 1)
+                & (occupied >= 2)
+                & (occupied <= 3)
+                & (facing == 0)
+            )
+            if removable.any():
+                centre[removable] = 0
+                thinned = True
+        if not thinned:
+            return centre.astype(bool)
+
+
+def centerlines(mask: np.ndarray) -> list[np.ndarray]:
+    """The middle lines of a mask's regions as smoothed (x, y) points in px.
+
+    Branches that only reach into a corner of a stroke are pruned. Lines that meet
+    share the point where they meet, so a pen can run on from one into the next.
+    """
+    if not mask.any():
+        return []
+    half_widths = ndimage.distance_transform_edt(mask)
+    skeleton = thin(mask)
+    for _ in range(PRUNE_ROUNDS):
+        rows, columns, neighbours = _skeleton_graph(skeleton)
+        spurs = _spurs(_trace(neighbours), neighbours, half_widths[rows, columns])
+        for path in spurs:
+            skeleton[rows[path[:-1]], columns[path[:-1]]] = False
+        if not spurs:
+            break
+    rows, columns, neighbours = _skeleton_graph(skeleton)
+    lines = []
+    for path in _trace(neighbours):
+        points = np.column_stack([columns[path], rows[path]]) + PIXEL_CENTER
+        if len(path) == 1:
+            points = np.vstack([points, points + (DOT_PX, 0.0)])
+        loop = len(path) > 2 and path[0] == path[-1] and len(neighbours[path[0]]) == 2
+        lines.append(_smooth(points, loop))
+    return lines
+
+
+def polyline_data(lines: list[np.ndarray]) -> str:
+    """SVG path data with one subpath of straight segments per line."""
+    return " ".join(
+        "M" + " L".join(f"{x:.2f},{y:.2f}" for x, y in line) for line in lines
+    )
+
+
 def screen(field: np.ndarray, angle_deg: float) -> list[np.ndarray]:
     """Dashes, as 2 x 2 arrays of start and end in pixels, of lines across a field.
 
@@ -294,6 +436,127 @@ def path_data(rings: list[np.ndarray]) -> str:
         "M" + " L".join(f"{x:.2f},{y:.2f}" for x, y in ring[:-1]) + " Z"
         for ring in rings
     )
+
+
+def _skeleton_graph(
+    skeleton: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, list[list[int]]]:
+    """Rows, columns and neighbour lists of a skeleton's pixels, joined by m-adjacency.
+
+    Diagonal neighbours join only where no shared four-neighbour already links
+    them, so the steps of a staircase read as one path instead of small triangles.
+    """
+    rows, columns = np.nonzero(skeleton)
+    padded = np.pad(skeleton, 1)
+    index = np.full(padded.shape, -1)
+    index[rows + 1, columns + 1] = np.arange(len(rows))
+    near = {
+        step: padded[rows + 1 + step[0], columns + 1 + step[1]] for step in NEIGHBOURS
+    }
+    north, east, south, west = near[-1, 0], near[0, 1], near[1, 0], near[0, -1]
+    joined = {
+        (-1, 0): north,
+        (0, 1): east,
+        (1, 0): south,
+        (0, -1): west,
+        (-1, 1): near[-1, 1] & ~north & ~east,
+        (1, 1): near[1, 1] & ~south & ~east,
+        (1, -1): near[1, -1] & ~south & ~west,
+        (-1, -1): near[-1, -1] & ~north & ~west,
+    }
+    neighbours: list[list[int]] = [[] for _ in range(len(rows))]
+    for (row, column), linked in joined.items():
+        sources = np.flatnonzero(linked)
+        targets = index[rows[sources] + 1 + row, columns[sources] + 1 + column]
+        for source, target in zip(sources.tolist(), targets.tolist()):
+            neighbours[source].append(target)
+    return rows, columns, neighbours
+
+
+def _trace(neighbours: list[list[int]]) -> list[list[int]]:
+    """Paths of pixel indices between a graph's ends and junctions, then its loops.
+
+    A path runs on through pixels with exactly two neighbours. A lone pixel is a
+    path of its own, and a loop without a junction starts and ends on one pixel.
+    """
+    walked: set[tuple[int, int]] = set()
+
+    def walk(start: int, step: int) -> list[int]:
+        path = [start, step]
+        walked.add((min(start, step), max(start, step)))
+        previous, current = start, step
+        while len(neighbours[current]) == 2:
+            first, second = neighbours[current]
+            following = second if first == previous else first
+            edge = (min(current, following), max(current, following))
+            if edge in walked:
+                break
+            walked.add(edge)
+            path.append(following)
+            previous, current = current, following
+        return path
+
+    paths = []
+    for pixel, linked in enumerate(neighbours):
+        if len(linked) == 2:
+            continue
+        if not linked:
+            paths.append([pixel])
+        for step in linked:
+            if (min(pixel, step), max(pixel, step)) not in walked:
+                paths.append(walk(pixel, step))
+    covered = {pixel for path in paths for pixel in path}
+    for pixel, linked in enumerate(neighbours):
+        if len(linked) == 2 and pixel not in covered:
+            loop = walk(pixel, linked[0])
+            covered.update(loop)
+            paths.append(loop)
+    return paths
+
+
+def _spurs(
+    paths: list[list[int]], neighbours: list[list[int]], widths: np.ndarray
+) -> list[list[int]]:
+    """Paths from a free end to a junction within SPUR_RATIO half-widths of it, free
+    end first, leaving every junction at least KEPT_BRANCHES branches."""
+    short: dict[int, list[list[int]]] = {}
+    for path in paths:
+        if len(neighbours[path[0]]) != 1:
+            path = path[::-1]
+        junction = path[-1]
+        if (
+            len(neighbours[path[0]]) == 1
+            and len(neighbours[junction]) >= 3
+            and len(path) - 1 <= SPUR_RATIO * widths[junction]
+        ):
+            short.setdefault(junction, []).append(path)
+    spurs = []
+    for junction, branches in short.items():
+        kept = KEPT_BRANCHES if len(neighbours[junction]) == len(branches) else 0
+        spurs += sorted(branches, key=len)[: max(0, len(branches) - kept)]
+    return spurs
+
+
+def _smooth(points: np.ndarray, loop: bool) -> np.ndarray:
+    """Points averaged with CENTERLINE_SMOOTHING_PX neighbours either side along the
+    line; an open line keeps its end points, where other lines may meet it."""
+    reach = CENTERLINE_SMOOTHING_PX
+    span = 2 * reach + 1
+    if loop:
+        ring = points[:-1]
+        shifts = range(-reach, reach + 1)
+        averaged = sum(np.roll(ring, shift, axis=0) for shift in shifts) / span
+        return np.vstack([averaged, averaged[:1]])
+    padded = np.concatenate(
+        [
+            np.repeat(points[:1], reach, axis=0),
+            points,
+            np.repeat(points[-1:], reach, axis=0),
+        ]
+    )
+    averaged = sum(padded[shift : shift + len(points)] for shift in range(span)) / span
+    averaged[[0, -1]] = points[[0, -1]]
+    return averaged
 
 
 def _diffuse_line(

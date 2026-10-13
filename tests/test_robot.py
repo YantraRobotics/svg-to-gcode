@@ -465,6 +465,19 @@ class HoldableArm(FakeArm):
         return state_name == "power_on"
 
 
+class PaperArm(FakeArm):
+    """A FakeArm whose tip a surface stops at floor_z (base frame, m)."""
+
+    def __init__(self, *args, floor_z: float, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.floor_z = floor_z
+
+    def _advance(self) -> None:
+        super()._advance()
+        x, y, z = self.position
+        self.position = (x, y, max(z, self.floor_z))
+
+
 class SilentAnnouncer:
     def __init__(self):
         self.pens: list[pens.Pen] = []
@@ -502,6 +515,39 @@ def test_follow_keeps_the_tip_on_the_stroke(monkeypatch, stall_s, goal):
     assert worst < 1.0
     assert plotter.tip() == pytest.approx((40.0, 0.0, 0.0), abs=0.5)
     assert math.hypot(*rotation_error(arm.quat, goal)) < robot.SETTLE_TOLERANCE_RAD
+
+
+def test_a_stroke_settles_on_paper_that_sits_higher_than_mapped(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(robot, "time", clock)
+    placement = robot.Placement((300.0, 0.0, 0.0), 0.0, 0.0)
+    arm = PaperArm(
+        clock, (0.3, 0.0, 0.0, *VERTICAL), stall_on_read=0, stall_s=0.0, floor_z=0.001
+    )
+    plotter = robot.Plotter(arm, placement, 0.0, SilentAnnouncer())
+    stroke = [robot.Move(ORIGIN, (40.0, 0.0, 0.0), FEED_MM_MIN, rapid=False)]
+
+    plotter.follow(stroke, lambda _travelled: VERTICAL)
+
+    assert plotter.tip() == pytest.approx((40.0, 0.0, 1.0), abs=0.5)
+
+
+def test_a_tip_held_off_its_target_above_the_paper_warns_and_moves_on(
+    monkeypatch, caplog
+):
+    clock = FakeClock()
+    monkeypatch.setattr(robot, "time", clock)
+    placement = robot.Placement((300.0, 0.0, 0.0), 0.0, 0.0)
+    arm = PaperArm(
+        clock, (0.3, 0.0, 0.01, *VERTICAL), stall_on_read=0, stall_s=0.0, floor_z=0.007
+    )
+    plotter = robot.Plotter(arm, placement, 0.0, SilentAnnouncer())
+    lower = [robot.Move((0.0, 0.0, 10.0), (0.0, 0.0, 5.0), RAPID_MM_MIN, rapid=True)]
+
+    plotter.follow(lower, lambda _travelled: VERTICAL)
+
+    assert "0.0 mm off across the paper, +2.0 mm in height" in caplog.text
+    assert clock.now < 2 * robot.SETTLE_TIMEOUT_S
 
 
 def test_one_pen_run_with_the_tcp_at_the_tip_ends_raised_and_held(monkeypatch):

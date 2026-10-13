@@ -127,8 +127,9 @@ def test_each_pen_hatches_at_its_own_angle(tmp_path):
     yellow, magenta = layers_for(tmp_path, OVERLAPPING_SVG, outline=False)
 
     def directions(layer: gcode.Layer) -> set[float]:
+        # Strokes may run either way along their line to cut travel.
         return {
-            round(math.degrees(math.atan2(y1 - y0, x1 - x0)), 6)
+            round(math.degrees(math.atan2(y1 - y0, x1 - x0)) % 180.0, 6)
             for (x0, y0), (x1, y1) in layer.strokes
         }
 
@@ -140,13 +141,47 @@ def test_each_pen_hatches_at_its_own_angle(tmp_path):
 
 def test_open_subpaths_fill_as_if_closed(tmp_path):
     (layer,) = layers_for(tmp_path, OPEN_TRIANGLE_SVG, paper=(30.0, 30.0))
-    *hatches, outline = layer.strokes
+    (outline,) = [stroke for stroke in layer.strokes if len(stroke) > 2]
+    hatches = [stroke for stroke in layer.strokes if stroke is not outline]
 
-    assert outline == [(10.0, 10.0), (20.0, 10.0), (10.0, 20.0), (10.0, 10.0)]
+    assert outline[0] == outline[-1]
+    assert sorted(outline[:-1]) == [(10.0, 10.0), (10.0, 20.0), (20.0, 10.0)]
     assert len(hatches) > 5
     for stroke in hatches:
         for x, y in stroke:
             assert x >= 10.0 - 1e-6 and y >= 10.0 - 1e-6 and x + y <= 30.0 + 1e-6
+
+
+def test_strokes_run_nearest_first():
+    near_backwards = [(10.0, 0.0), (5.0, 0.0)]
+    ring = [(20.0, 0.0), (20.0, 5.0), (15.0, 5.0), (15.0, 0.0), (20.0, 0.0)]
+    far = [(30.0, 0.0), (40.0, 0.0)]
+
+    ordered = gcode.order_strokes([far, ring, near_backwards], (0.0, 0.0))
+
+    assert ordered == [
+        [(5.0, 0.0), (10.0, 0.0)],
+        [(15.0, 0.0), (20.0, 0.0), (20.0, 5.0), (15.0, 5.0), (15.0, 0.0)],
+        far,
+    ]
+
+
+def test_pen_stays_down_into_a_stroke_that_starts_where_the_last_ended():
+    strokes = [
+        [(0.0, 0.0), (10.0, 0.0)],
+        [(10.0, 0.0), (10.0, 10.0)],
+        [(20.0, 0.0), (30.0, 0.0)],
+    ]
+    text = gcode.to_gcode([gcode.Layer(1, CMYK[3], strokes)], FEED_MM_MIN, LIFT_MM)
+
+    steps = robot.parse_gcode(text, (0.0, 0.0, LIFT_MM), RAPID_MM_MIN)
+    inked = [
+        len(chain)
+        for chain in robot.chains(steps)
+        if isinstance(chain, list) and chain[0].is_drawing
+    ]
+    assert text.count("G1 Z0.000") == 2
+    assert inked == [2, 1]
 
 
 def test_fills_without_hatch_or_outline_draw_nothing(tmp_path):

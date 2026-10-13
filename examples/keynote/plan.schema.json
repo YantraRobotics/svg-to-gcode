@@ -1,0 +1,86 @@
+{
+  "type": "object",
+  "properties": {
+    "window_id": {
+      "type": "integer"
+    },
+    "window_sha256": {
+      "type": "string"
+    },
+    "base_revision": {
+      "type": "integer"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "additions": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "meaning": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "box": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "strokes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "properties": {
+                "pen": {
+                  "type": "string",
+                  "enum": [
+                    "black",
+                    "red",
+                    "green",
+                    "blue"
+                  ]
+                },
+                "d": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "pen",
+                "d"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "id",
+          "meaning",
+          "evidence",
+          "box",
+          "strokes"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "window_id",
+    "window_sha256",
+    "base_revision",
+    "summary",
+    "additions"
+  ],
+  "additionalProperties": false
+}

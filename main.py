@@ -3,6 +3,7 @@ import itertools
 import logging
 import math
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from xml.etree.ElementTree import ParseError
 
@@ -104,6 +105,10 @@ def run_image(args: argparse.Namespace) -> int:
     elif args.one_line:
         svg = image.image_to_one_line(
             args.image, args.pens, args.resolution, args.breaks
+        )
+    elif args.centerline:
+        svg = image.image_to_centerline(
+            args.image, args.pens, args.resolution, args.smoothing, args.speckle
         )
     else:
         svg = image.image_to_svg(
@@ -219,6 +224,59 @@ def run_view(args: argparse.Namespace) -> int:
     return 0
 
 
+def robot_drawer(
+    args: argparse.Namespace, swap_wait: float | None
+) -> Callable[[str], None] | None:
+    """Draw jobs on the controller with --execute; None leaves them as previews."""
+    if not args.execute:
+        return None
+    if args.origin is None or args.pen_offset is None:
+        raise ValueError("--execute requires --origin X Y Z and --pen-offset")
+    placement = robot.Placement(tuple(args.origin), math.radians(args.yaw), 0.0)
+    shell = Shell(*resolve_endpoints(args))
+
+    def draw(code: str) -> None:
+        robot.draw(shell, code, placement, args.pen_offset, args.rapid, 0.0, swap_wait)
+
+    return draw
+
+
+def run_live(args: argparse.Namespace) -> int:
+    from svg_to_gcode import live
+
+    if args.transcript is None and args.whisper_model is None:
+        raise ValueError("microphone and --wav input require --whisper-model")
+    return live.run(args, robot_drawer(args, None))
+
+
+def run_talk(args: argparse.Namespace) -> int:
+    from svg_to_gcode import talk
+
+    if args.transcript is None and args.whisper_model is None:
+        raise ValueError("microphone and --wav input require --whisper-model")
+    return talk.run(args, robot_drawer(args, args.swap_wait))
+
+
+def run_storyboard(args: argparse.Namespace) -> int:
+    from svg_to_gcode import storyboard
+
+    report = storyboard.render(
+        args.transcript,
+        args.plans,
+        args.output,
+        args.interval_seconds,
+        args.wpm,
+        args.paper,
+        args.feed,
+        args.rapid,
+        args.lift,
+        args.swap_seconds,
+    )
+    print(f"{report['doodles']} doodles in {len(report['batches'])} immutable batches")
+    print(f"Open {(args.output / 'index.html').resolve()}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Draw SVG images on paper with the Owl 6.9 arm."
@@ -288,6 +346,13 @@ def build_parser() -> argparse.ArgumentParser:
         "of that pen is wanted, for photos; the line is a pixel wide, so set "
         "--resolution to the drawing's width over the pen width (--smoothing, "
         "--speckle and --blend are ignored)",
+    )
+    style.add_argument(
+        "--centerline",
+        action="store_true",
+        help="draw each region once along its middle instead of filling it, for line "
+        "art and lettering; keep --resolution near the image's own size so thin "
+        "lines survive (--blend is ignored)",
     )
     to_svg.add_argument(
         "--breaks",
@@ -426,6 +491,183 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_endpoint_arguments(view)
     view.set_defaults(handler=run_view)
+
+    live = commands.add_parser(
+        "live",
+        parents=[paper],
+        help="doodle from local speech or a transcript; preview by default",
+    )
+    live.add_argument(
+        "output", type=Path, help="new session directory; must not already exist"
+    )
+    source = live.add_mutually_exclusive_group()
+    source.add_argument(
+        "--transcript", type=Path, help="replay one spoken phrase per line"
+    )
+    source.add_argument("--wav", type=Path, help="replay a 16 kHz mono PCM16 WAV")
+    live.add_argument("--device", help="microphone device name or numeric index")
+    live.add_argument("--whisper-cli", default="whisper-cli")
+    live.add_argument(
+        "--whisper-model", type=Path, help="local whisper.cpp GGML model file"
+    )
+    live.add_argument("--language", default="en", help="Whisper language code, or auto")
+    live.add_argument(
+        "--chunk-seconds",
+        type=positive,
+        default=4.0,
+        help="audio window or transcript line interval, 1–30 seconds",
+    )
+    live.add_argument(
+        "--model",
+        default="keywords",
+        help="Ollama model name, e.g. qwen2.5:7b; default keywords needs no LLM",
+    )
+    live.add_argument("--margin", type=non_negative, default=10.0, help="mm")
+    live.add_argument(
+        "--cell", type=positive, default=40.0, help="canvas cell size, mm"
+    )
+    live.add_argument(
+        "--feed", type=feed_rate, default=1000.0, help="ink speed, mm/min"
+    )
+    live.add_argument(
+        "--rapid", type=feed_rate, default=3000.0, help="pen-up speed, mm/min"
+    )
+    live.add_argument("--lift", type=positive, default=2.0, help="pen-up height, mm")
+    live.add_argument(
+        "--ink-seconds",
+        type=positive,
+        default=8.0,
+        help="maximum ink motion per doodle; travel and lifts add time",
+    )
+    live.add_argument(
+        "--max-age",
+        type=positive,
+        default=20.0,
+        help="discard older ideas, seconds since audio capture",
+    )
+    live.add_argument(
+        "--preview-speed",
+        type=positive,
+        default=1.0,
+        help="preview motion speed multiplier; does not affect robot",
+    )
+    live.add_argument(
+        "--execute",
+        action="store_true",
+        help="send motion to the configured controller; load a black pen first",
+    )
+    live.add_argument("--origin", nargs=3, type=finite, metavar=("X", "Y", "Z"))
+    live.add_argument("--yaw", type=finite, default=0.0, help="paper yaw, degrees")
+    live.add_argument("--pen-offset", type=finite, help="required with --execute, mm")
+    add_endpoint_arguments(live)
+    live.set_defaults(handler=run_live)
+
+    talk = commands.add_parser(
+        "talk",
+        parents=[paper],
+        help="every few minutes, have Codex doodle what the talk just said; "
+        "preview by default",
+    )
+    talk.add_argument(
+        "output", type=Path, help="new session directory; must not already exist"
+    )
+    heard = talk.add_mutually_exclusive_group()
+    heard.add_argument(
+        "--transcript",
+        type=Path,
+        help="rehearse on a text transcript, windowed at --wpm without waiting",
+    )
+    heard.add_argument(
+        "--wav", type=Path, help="replay a 16 kHz mono PCM16 WAV in real time"
+    )
+    talk.add_argument("--device", help="microphone device name or numeric index")
+    talk.add_argument("--whisper-cli", default="whisper-cli")
+    talk.add_argument(
+        "--whisper-model", type=Path, help="local whisper.cpp GGML model file"
+    )
+    talk.add_argument("--language", default="en", help="Whisper language code, or auto")
+    talk.add_argument(
+        "--chunk-seconds",
+        type=positive,
+        default=4.0,
+        help="audio per transcription, 1–30 seconds",
+    )
+    talk.add_argument(
+        "--interval-minutes",
+        type=positive,
+        default=10.0,
+        help="minutes of speech behind each batch of doodles",
+    )
+    talk.add_argument(
+        "--wpm",
+        type=positive,
+        default=150.0,
+        help="speaking rate that sets --transcript window boundaries",
+    )
+    talk.add_argument(
+        "--doodles",
+        type=int,
+        choices=range(1, 4),
+        default=1,
+        help="most doodles per window (default 1)",
+    )
+    talk.add_argument(
+        "--cell", type=positive, default=60.0, help="doodle square size on paper, mm"
+    )
+    talk.add_argument(
+        "--planner-model", help="Codex model for the doodles (default: Codex's own)"
+    )
+    talk.add_argument(
+        "--feed", type=feed_rate, default=1000.0, help="ink speed, mm/min"
+    )
+    talk.add_argument(
+        "--rapid", type=feed_rate, default=3000.0, help="pen-up speed, mm/min"
+    )
+    talk.add_argument("--lift", type=positive, default=2.0, help="pen-up height, mm")
+    talk.add_argument(
+        "--swap-wait",
+        type=non_negative,
+        metavar="SECONDS",
+        help="wait this long at each pen change instead of asking for Enter",
+    )
+    talk.add_argument(
+        "--execute",
+        action="store_true",
+        help="draw each batch on the configured controller, swapping pens by hand",
+    )
+    talk.add_argument("--origin", nargs=3, type=finite, metavar=("X", "Y", "Z"))
+    talk.add_argument("--yaw", type=finite, default=0.0, help="paper yaw, degrees")
+    talk.add_argument("--pen-offset", type=finite, help="required with --execute, mm")
+    add_endpoint_arguments(talk)
+    talk.set_defaults(handler=run_talk)
+
+    storyboard = commands.add_parser(
+        "storyboard",
+        parents=[paper],
+        help="replay Codex-authored plans in ten-minute transcript windows",
+    )
+    storyboard.add_argument("transcript", type=Path)
+    storyboard.add_argument("output", type=Path, help="new output directory")
+    storyboard.add_argument(
+        "--plans", type=Path, default=Path("examples/keynote/plans")
+    )
+    storyboard.add_argument("--interval-seconds", type=positive, default=600.0)
+    storyboard.add_argument(
+        "--wpm",
+        type=positive,
+        default=150.0,
+        help="synthetic speech rate for untimed text",
+    )
+    storyboard.add_argument("--feed", type=feed_rate, default=1000.0)
+    storyboard.add_argument("--rapid", type=feed_rate, default=3000.0)
+    storyboard.add_argument("--lift", type=positive, default=2.0)
+    storyboard.add_argument(
+        "--swap-seconds",
+        type=non_negative,
+        default=20.0,
+        help="estimated manual swap time per pen load",
+    )
+    storyboard.set_defaults(handler=run_storyboard)
     return parser
 
 

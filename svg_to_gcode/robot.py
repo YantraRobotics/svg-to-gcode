@@ -38,13 +38,17 @@ MIN_Z_MM = -2.0
 KP_LIN = 5.0
 KP_ANG = 5.0
 MAX_CORRECTION_M_S = 0.05
-SETTLE_TOLERANCE_MM = 0.5
+# The real arm stalls at the few mm/s the correction asks for near a target, so
+# a settle that runs out of time moves on; MAX_TRACKING_ERROR_MM still aborts.
+SETTLE_TOLERANCE_MM = 1.0
 SETTLE_TOLERANCE_RAD = 0.02
 SETTLE_CYCLES = 5
-SETTLE_TIMEOUT_S = 5.0
+SETTLE_TIMEOUT_S = 2.0
 # PROTOCOL.md: a twist decays to zero 200 ms after the last one arrives.
 DEADMAN_S = 0.2
-MAX_TRACKING_ERROR_MM = 10.0
+# The real arm falls several mm behind on tight zigzags at drawing feeds and
+# coasts for DEADMAN_S whenever the network stalls.
+MAX_TRACKING_ERROR_MM = 25.0
 ABORT_LIFT_MM = 10.0
 ABORT_LIFT_FEED_MM_MIN = 600.0
 PEN_CHANGE_HEIGHT_MM = 80.0
@@ -622,6 +626,7 @@ class Plotter:
         ends = list(accumulate(durations))
         lengths = [move.length / MM_PER_M for move in chain]
         distances = list(accumulate(lengths))
+        on_paper = chain[-1].end[2] <= 0.0
         period = 1.0 / LOOP_RATE_HZ
         # The reference turns toward the goal no faster than the tilt rate.
         reference_quat = tuple(_telemetry(self.shell)["tcp_pose"][3:7])
@@ -675,21 +680,32 @@ class Plotter:
             if error_mm > MAX_TRACKING_ERROR_MM:
                 raise DrawError(
                     f"pen tip is {error_mm:.1f} mm off its path (limit "
-                    f"{MAX_TRACKING_ERROR_MM:g} mm); check --origin and --pen-offset"
+                    f"{MAX_TRACKING_ERROR_MM:g} mm); check --origin or --corners, "
+                    "and --pen-offset"
                 )
             worst = max(worst, error_mm)
             if index == len(chain):
                 unturned = math.hypot(*rotation_error(tcp_quat, target_quat))
-                still = (
-                    error_mm < SETTLE_TOLERANCE_MM and unturned < SETTLE_TOLERANCE_RAD
-                )
+                across = math.dist(tip[:2], reference[:2]) * MM_PER_M
+                height = (tip[2] - reference[2]) * MM_PER_M
+                # Paper that sits a little higher than its corners suggest stops the
+                # pen short of its target, so on the paper only the position across
+                # it has to settle.
+                miss = across if on_paper else error_mm
+                still = miss < SETTLE_TOLERANCE_MM and unturned < SETTLE_TOLERANCE_RAD
                 settled = settled + 1 if still else 0
                 if settled >= SETTLE_CYCLES:
                     return worst
                 if elapsed - ends[-1] > SETTLE_TIMEOUT_S:
-                    raise DrawError(
-                        f"pen tip did not settle within {SETTLE_TIMEOUT_S:g} s"
+                    log.warning(
+                        "pen tip did not settle within %g s (%.1f mm off across the "
+                        "paper, %+.1f mm in height, wrist %.1f deg off); going on",
+                        SETTLE_TIMEOUT_S,
+                        across,
+                        height,
+                        math.degrees(unturned),
                     )
+                    return worst
 
             spin = clamp_norm(
                 tuple(t / period + c for t, c in zip(turn, correction[3:])),
