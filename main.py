@@ -320,8 +320,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--bind",
-        default=server.DEFAULT_HOST,
-        help=f"address to bind when serving (default {server.DEFAULT_HOST})",
+        default=server.DEFAULT_BIND_HOST,
+        help=f"address to bind when serving (default {server.DEFAULT_BIND_HOST})",
     )
     commands = parser.add_subparsers(dest="command")
 
@@ -727,8 +727,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--bind",
-        default=server.DEFAULT_HOST,
-        help=f"address to bind (default {server.DEFAULT_HOST})",
+        default=server.DEFAULT_BIND_HOST,
+        help=f"address to bind (default {server.DEFAULT_BIND_HOST})",
     )
     serve.set_defaults(handler=run_serve)
 

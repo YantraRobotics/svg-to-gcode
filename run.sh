@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PORT="${1:-8000}"
-BIND="${2:-127.0.0.1}"
+BIND="${2:-0.0.0.0}"
 
 if [ ! -d web/node_modules ]; then
   npm --prefix web install

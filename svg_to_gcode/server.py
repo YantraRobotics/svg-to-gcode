@@ -20,6 +20,7 @@ from svg_to_gcode import gcode, image, pens, robot
 
 MIN_PORT = 1
 MAX_PORT = 65535
+DEFAULT_BIND_HOST = "0.0.0.0"
 MAX_BODY_BYTES = 50 * 1024 * 1024
 DEFAULT_RESOLUTION = 400
 DEFAULT_SMOOTHING = 5
