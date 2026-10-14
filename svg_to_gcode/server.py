@@ -23,6 +23,9 @@ MAX_BODY_BYTES = 50 * 1024 * 1024
 DEFAULT_RESOLUTION = 400
 DEFAULT_SMOOTHING = 5
 DEFAULT_SPECKLE = 8.0
+DEFAULT_CENTERLINE_RESOLUTION = 1536
+DEFAULT_CENTERLINE_SMOOTHING = 1
+DEFAULT_CENTERLINE_SPECKLE = 3.0
 DEFAULT_BLEND = 2
 DEFAULT_BREAKS = 3
 DEFAULT_PAPER = "A4"
@@ -105,14 +108,26 @@ def parse_float_list(raw: str, expected: int, name: str) -> list[float]:
 def convert_image_bytes(body: bytes, params: dict[str, list[str]]) -> str:
     if not body:
         raise ValueError("request body is empty; expected raster image bytes")
+    style = query_str(params, "style", "fill")
+    if style not in STYLES:
+        raise ValueError(f"style must be one of {', '.join(STYLES)}, got {style!r}")
     pen_list = pens.parse_pens(query_str(params, "pens", pens.DEFAULT_PENS))
-    resolution = query_int(params, "resolution", DEFAULT_RESOLUTION)
+    default_resolution = (
+        DEFAULT_CENTERLINE_RESOLUTION if style == "centerline" else DEFAULT_RESOLUTION
+    )
+    default_smoothing = (
+        DEFAULT_CENTERLINE_SMOOTHING if style == "centerline" else DEFAULT_SMOOTHING
+    )
+    default_speckle = (
+        DEFAULT_CENTERLINE_SPECKLE if style == "centerline" else DEFAULT_SPECKLE
+    )
+    resolution = query_int(params, "resolution", default_resolution)
     if resolution <= 0:
         raise ValueError(f"resolution must be positive, got {resolution}")
-    smoothing = query_int(params, "smoothing", DEFAULT_SMOOTHING)
+    smoothing = query_int(params, "smoothing", default_smoothing)
     if smoothing <= 0 or smoothing % 2 == 0:
         raise ValueError(f"smoothing must be a positive odd integer, got {smoothing}")
-    speckle = query_float(params, "speckle", DEFAULT_SPECKLE)
+    speckle = query_float(params, "speckle", default_speckle)
     if speckle < 0:
         raise ValueError(f"speckle must not be negative, got {speckle}")
     blend = query_int(params, "blend", DEFAULT_BLEND)
@@ -121,9 +136,6 @@ def convert_image_bytes(body: bytes, params: dict[str, list[str]]) -> str:
     breaks = query_int(params, "breaks", DEFAULT_BREAKS)
     if breaks < 0:
         raise ValueError(f"breaks must not be negative, got {breaks}")
-    style = query_str(params, "style", "fill")
-    if style not in STYLES:
-        raise ValueError(f"style must be one of {', '.join(STYLES)}, got {style!r}")
 
     with tempfile.TemporaryDirectory(prefix="svg-to-gcode-") as folder:
         image_path = Path(folder) / "input.img"

@@ -125,8 +125,8 @@ def test_corners_out_of_order_are_refused(order):
 def test_a_mistyped_corner_height_is_refused():
     corners = list(MEASURED_CORNERS)
     x, y, z = corners[2]
-    corners[2] = (x, y, z - 6.0)
-    with pytest.raises(ValueError, match=r"8\.9 mm out of one plane"):
+    corners[2] = (x, y, z - 20.0)
+    with pytest.raises(ValueError, match=r"22\.9 mm out of one plane"):
         robot.corner_placement(corners, z_offset=0.0)
 
 

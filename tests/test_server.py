@@ -103,3 +103,21 @@ def test_serves_built_web_app(base_url):
         assert response.status == 200
         html = response.read().decode("utf-8")
         assert "Owl 6.9 Plotter Workbench" in html
+
+
+def test_centerline_preserves_thin_line_art(base_url):
+    card = Image.new("RGB", (200, 200), "white")
+    draw = ImageDraw.Draw(card)
+    draw.line([(20, 100), (180, 100)], fill=(35, 31, 32), width=3)
+    buffer = io.BytesIO()
+    card.save(buffer, format="PNG")
+
+    req = Request(
+        f"{base_url}/image?style=centerline",
+        data=buffer.getvalue(),
+        headers={"Content-Type": "image/png"},
+        method="POST",
+    )
+    with urlopen(req) as response:
+        svg_body = response.read().decode("utf-8")
+        assert "<path" in svg_body

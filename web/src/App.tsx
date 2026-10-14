@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  ArrowUpDown,
+  Check,
   Crosshair,
   Download,
   FileCode2,
@@ -8,6 +10,8 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCw,
+  Save,
   Upload,
   X,
 } from "lucide-react"
@@ -60,17 +64,17 @@ interface DrawSummary {
 }
 
 const PEN_PRESETS: Record<string, PenEntry[]> = {
+  expo: [
+    { name: "red", hex: "#D52B1E", nibMm: 0.8 },
+    { name: "green", hex: "#00843D", nibMm: 0.8 },
+    { name: "blue", hex: "#1B4F9C", nibMm: 0.8 },
+    { name: "black", hex: "#231F20", nibMm: 0.8 },
+  ],
   cmyk: [
     { name: "yellow", hex: "#FFF200", nibMm: 0.8 },
     { name: "cyan", hex: "#00AEEF", nibMm: 0.8 },
     { name: "magenta", hex: "#EC008C", nibMm: 0.8 },
     { name: "black", hex: "#231F20", nibMm: 0.8 },
-  ],
-  expo: [
-    { name: "red", hex: "#D52B1E", nibMm: 2.0 },
-    { name: "green", hex: "#00843D", nibMm: 2.0 },
-    { name: "blue", hex: "#1B4F9C", nibMm: 2.0 },
-    { name: "black", hex: "#231F20", nibMm: 2.0 },
   ],
   mono: [{ name: "black", hex: "#231F20", nibMm: 0.5 }],
 }
@@ -84,8 +88,120 @@ function serializePens(pens: PenEntry[]): string {
     .join(",")
 }
 
+const CORNERS_STORAGE_KEY = "svg-to-gcode.corners"
+const PLACEMENT_MODE_STORAGE_KEY = "svg-to-gcode.placement-mode"
+
+const DEFAULT_CORNERS: Record<CornerKey, CornerCoords> = {
+  bl: ["-0.9", "-508.2", "-54.2"],
+  br: ["-209.0", "-280.7", "-53.8"],
+  tr: ["-345.5", "-423.5", "-55.1"],
+  tl: ["-146.8", "-621.3", "-49.1"],
+}
+
+function cornerSpanPaper(corners: Record<CornerKey, CornerCoords>): string {
+  const pts = CORNER_LABELS.map(({ key }) =>
+    corners[key].map((v) => Number(v))
+  )
+  if (pts.some((p) => p.some((n) => !Number.isFinite(n)))) {
+    return "294x200"
+  }
+  const [bl, br, tr, tl] = pts
+  const dist = (a: number[], b: number[]) =>
+    Math.hypot(a[0] - b[0], a[1] - b[1])
+  const width = Math.floor((dist(bl, br) + dist(tl, tr)) / 2)
+  const height = Math.floor((dist(bl, tl) + dist(br, tr)) / 2)
+  if (width < 10 || height < 10) {
+    return "294x200"
+  }
+  return `${width}x${height}`
+}
+
+function loadSavedCorners(): Record<CornerKey, CornerCoords> {
+  try {
+    const raw = window.localStorage.getItem(CORNERS_STORAGE_KEY)
+    if (!raw) return DEFAULT_CORNERS
+    const parsed = JSON.parse(raw) as Partial<Record<CornerKey, unknown>>
+    const result = { ...DEFAULT_CORNERS }
+    for (const { key } of CORNER_LABELS) {
+      const entry = parsed[key]
+      if (
+        Array.isArray(entry) &&
+        entry.length === 3 &&
+        entry.every((item) => typeof item === "string")
+      ) {
+        result[key] = [entry[0], entry[1], entry[2]]
+      }
+    }
+    return result
+  } catch {
+    return DEFAULT_CORNERS
+  }
+}
+
+function loadSavedPlacementMode(): "origin" | "corners" {
+  try {
+    return window.localStorage.getItem(PLACEMENT_MODE_STORAGE_KEY) === "origin"
+      ? "origin"
+      : "corners"
+  } catch {
+    return "corners"
+  }
+}
+
 function serializeCorners(corners: Record<CornerKey, CornerCoords>): string {
   return CORNER_LABELS.flatMap(({ key }) => corners[key]).join(",")
+}
+
+function sortCornersAnticlockwise(
+  current: Record<CornerKey, CornerCoords>,
+  preferLandscape: boolean
+): Record<CornerKey, CornerCoords> {
+  const entries = CORNER_LABELS.map(({ key }) => ({
+    coords: current[key],
+    x: Number(current[key][0]),
+    y: Number(current[key][1]),
+  }))
+  if (entries.some((e) => !Number.isFinite(e.x) || !Number.isFinite(e.y))) {
+    return current
+  }
+
+  const cx = entries.reduce((sum, e) => sum + e.x, 0) / 4
+  const cy = entries.reduce((sum, e) => sum + e.y, 0) / 4
+
+  const ccw = [...entries].sort(
+    (a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx)
+  )
+
+  const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.hypot(a.x - b.x, a.y - b.y)
+
+  // Pick the rotation whose bottom edge (BL -> BR) matches the landscape/portrait aspect,
+  // breaking ties by keeping BL closest to the current BL row or lowest Y+X.
+  const currentBl = entries[0]
+  let bestRot = ccw
+  let bestScore = Number.POSITIVE_INFINITY
+
+  for (let i = 0; i < 4; i++) {
+    const rot = [...ccw.slice(i), ...ccw.slice(0, i)]
+    const [bl, br, tr, tl] = rot
+    const width = (dist(bl, br) + dist(tl, tr)) / 2
+    const height = (dist(bl, tl) + dist(br, tr)) / 2
+    const matchesAspect = preferLandscape ? width >= height : height >= width
+    const aspectPenalty = matchesAspect ? 0 : 1e6
+    const blShift = dist(bl, currentBl)
+    const score = aspectPenalty + blShift
+    if (score < bestScore) {
+      bestScore = score
+      bestRot = rot
+    }
+  }
+
+  return {
+    bl: bestRot[0].coords,
+    br: bestRot[1].coords,
+    tr: bestRot[2].coords,
+    tl: bestRot[3].coords,
+  }
 }
 
 export function App() {
@@ -98,50 +214,55 @@ export function App() {
     new TextEncoder().encode(SAMPLE_ROSE_SVG)
   )
 
-  const [penPreset, setPenPreset] = useState<string>("cmyk")
-  const [pens, setPens] = useState<PenEntry[]>(PEN_PRESETS.cmyk)
+  const [penPreset, setPenPreset] = useState<string>("expo")
+  const [pens, setPens] = useState<PenEntry[]>(PEN_PRESETS.expo)
 
-  const [traceStyle, setTraceStyle] = useState<string>("one-line")
-  const [resolution, setResolution] = useState<number>(140)
+  const [traceStyle, setTraceStyle] = useState<string>("centerline")
+  const [resolution, setResolution] = useState<number>(1536)
+  const [smoothing, setSmoothing] = useState<number>(1)
+  const [speckle, setSpeckle] = useState<number>(3)
   const [breaks, setBreaks] = useState<number>(3)
 
-  const [paperPreset, setPaperPreset] = useState<string>("250x250")
-  const [customPaper, setCustomPaper] = useState<string>("250x250")
+  const [paperPreset, setPaperPreset] = useState<string>("corners")
+  const [customPaper, setCustomPaper] = useState<string>("294x200")
   const [margin, setMargin] = useState<number>(12)
-  const [hatchSpacing, setHatchSpacing] = useState<number>(0.8)
+  const [hatchSpacing, setHatchSpacing] = useState<number>(0)
   const [hatchAngle, setHatchAngle] = useState<number>(45)
   const [outline, setOutline] = useState<boolean>(true)
   const [feed, setFeed] = useState<number>(1000)
-  const [lift, setLift] = useState<number>(2)
+  const [lift, setLift] = useState<number>(6)
 
   const [placementMode, setPlacementMode] = useState<"origin" | "corners">(
-    "origin"
+    loadSavedPlacementMode
   )
-  const [originX, setOriginX] = useState<string>("-125")
-  const [originY, setOriginY] = useState<string>("-460")
-  const [originZ, setOriginZ] = useState<string>("30.6")
-  const [corners, setCorners] = useState<Record<CornerKey, CornerCoords>>({
-    bl: ["-125", "-460", "30.6"],
-    br: ["125", "-460", "30.6"],
-    tr: ["125", "-210", "30.6"],
-    tl: ["-125", "-210", "30.6"],
-  })
-  const [penOffset, setPenOffset] = useState<string>("40")
+  const [originX, setOriginX] = useState<string>("5.2")
+  const [originY, setOriginY] = useState<string>("-506")
+  const [originZ, setOriginZ] = useState<string>("-89.8")
+  const [corners, setCorners] =
+    useState<Record<CornerKey, CornerCoords>>(loadSavedCorners)
+  const [cornersSaved, setCornersSaved] = useState<boolean>(false)
+  const [penOffset, setPenOffset] = useState<string>("0")
   const [tilt, setTilt] = useState<number>(0)
-  const [rapid, setRapid] = useState<number>(3000)
+  const [rapid, setRapid] = useState<number>(1500)
   const [swapWait, setSwapWait] = useState<number>(5)
-  const [robotHost, setRobotHost] = useState<string>("127.0.0.1")
+  const [robotHost, setRobotHost] = useState<string>("192.168.1.69")
 
   const [tracedSvg, setTracedSvg] = useState<string>(SAMPLE_ROSE_SVG)
   const [gcodeText, setGcodeText] = useState<string>("")
   const [drawSummary, setDrawSummary] = useState<DrawSummary | null>(null)
-  const [showRapids, setShowRapids] = useState<boolean>(true)
+  const [showRapids, setShowRapids] = useState<boolean>(false)
   const [activeToolFilter, setActiveToolFilter] = useState<number | null>(null)
   const [viewTab, setViewTab] = useState<string>("toolpath")
   const [busy, setBusy] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
-  const effectivePaper = paperPreset === "custom" ? customPaper : paperPreset
+  const cornersPaper = useMemo(() => cornerSpanPaper(corners), [corners])
+  const effectivePaper =
+    paperPreset === "corners"
+      ? cornersPaper
+      : paperPreset === "custom"
+        ? customPaper
+        : paperPreset
   const [paperWidthMm, paperHeightMm] = useMemo(
     () => parsePaperMm(effectivePaper),
     [effectivePaper]
@@ -172,6 +293,8 @@ export function App() {
             pens: penParam,
             style: traceStyle,
             resolution: String(resolution),
+            smoothing: String(smoothing),
+            speckle: String(speckle),
             breaks: String(breaks),
           })
           const imgRes = await fetch(`/image?${imgParams.toString()}`, {
@@ -236,6 +359,8 @@ export function App() {
     [
       traceStyle,
       resolution,
+      smoothing,
+      speckle,
       breaks,
       effectivePaper,
       margin,
@@ -250,14 +375,17 @@ export function App() {
     ]
   )
 
-  const initializedRef = useRef(false)
   useEffect(() => {
-    if (initializedRef.current) return
-    initializedRef.current = true
     void fetch("/health")
       .then((res) => setServerOnline(res.ok))
       .catch(() => setServerOnline(false))
-    void runPipeline(rawBytes, sourceKind, pens)
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void runPipeline(rawBytes, sourceKind, pens)
+    }, 180)
+    return () => window.clearTimeout(timer)
   }, [rawBytes, sourceKind, pens, runPipeline])
 
   const handleFileUpload = async (file: File) => {
@@ -270,16 +398,14 @@ export function App() {
     setSourceKind(kind)
     setRawBytes(bytes)
     setActiveToolFilter(null)
-    await runPipeline(bytes, kind, pens)
   }
 
-  const handleLoadSample = async () => {
+  const handleLoadSample = () => {
     const bytes = new TextEncoder().encode(SAMPLE_ROSE_SVG)
     setSourceName("compass-rose.svg")
     setSourceKind("svg")
     setRawBytes(bytes)
     setActiveToolFilter(null)
-    await runPipeline(bytes, "svg", pens)
   }
 
   const handlePresetChange = (presetKey: string) => {
@@ -287,8 +413,65 @@ export function App() {
     const preset = PEN_PRESETS[presetKey]
     if (preset) {
       setPens(preset.map((p) => ({ ...p })))
-      setHatchSpacing(preset[0].nibMm)
+      if (traceStyle === "fill") {
+        setHatchSpacing(preset[0].nibMm)
+      }
     }
+  }
+
+  const handleTraceStyleChange = (nextStyle: string) => {
+    setTraceStyle(nextStyle)
+    if (nextStyle === "centerline") {
+      setResolution(1536)
+      setSmoothing(1)
+      setSpeckle(3)
+      setHatchSpacing(0)
+    } else if (nextStyle === "fill") {
+      setResolution(400)
+      setSmoothing(5)
+      setSpeckle(8)
+      setHatchSpacing(pens[0]?.nibMm ?? 0.8)
+    } else {
+      setResolution(140)
+      setHatchSpacing(0)
+    }
+  }
+
+  const handlePlacementModeChange = (mode: "origin" | "corners") => {
+    setPlacementMode(mode)
+    try {
+      window.localStorage.setItem(PLACEMENT_MODE_STORAGE_KEY, mode)
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  const handleSaveCorners = () => {
+    try {
+      window.localStorage.setItem(CORNERS_STORAGE_KEY, JSON.stringify(corners))
+      window.localStorage.setItem(PLACEMENT_MODE_STORAGE_KEY, "corners")
+      setCornersSaved(true)
+      window.setTimeout(() => setCornersSaved(false), 1800)
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleSortCorners = () => {
+    setErrorMessage(null)
+    setCorners((prev) =>
+      sortCornersAnticlockwise(prev, paperWidthMm >= paperHeightMm)
+    )
+  }
+
+  const handleRotateCorners = () => {
+    setErrorMessage(null)
+    setCorners((prev) => ({
+      bl: prev.br,
+      br: prev.tr,
+      tr: prev.tl,
+      tl: prev.bl,
+    }))
   }
 
   const handleExecuteOnRobot = async (dryRun: boolean) => {
@@ -409,13 +592,68 @@ export function App() {
     setPens((prev) => prev.filter((_, idx) => idx !== index))
   }
 
-  const visibleSegments = useMemo(() => {
-    return parsedGcode.segments.filter((seg) => {
-      if (!showRapids && seg.rapid) return false
-      if (activeToolFilter !== null && seg.tool !== activeToolFilter) return false
-      return true
-    })
-  }, [parsedGcode.segments, showRapids, activeToolFilter])
+  const toolPaths = useMemo(() => {
+    const nibByName = new Map(pens.map((p) => [p.name.trim(), p.nibMm]))
+    const rapidParts: string[] = []
+    const byTool = new Map<
+      number,
+      { color: string; nibMm: number; dParts: string[]; lastX: number; lastY: number }
+    >()
+
+    for (const seg of parsedGcode.segments) {
+      if (activeToolFilter !== null && seg.tool !== activeToolFilter) continue
+      const x0 = seg.x0
+      const y0 = paperHeightMm - seg.y0
+      const x1 = seg.x1
+      const y1 = paperHeightMm - seg.y1
+
+      if (seg.rapid) {
+        if (showRapids) {
+          rapidParts.push(
+            `M${x0.toFixed(2)},${y0.toFixed(2)}L${x1.toFixed(2)},${y1.toFixed(2)}`
+          )
+        }
+        continue
+      }
+
+      const toolNum = seg.tool ?? 1
+      let group = byTool.get(toolNum)
+      if (!group) {
+        const info = parsedGcode.tools.get(toolNum)
+        const nib = (info ? nibByName.get(info.name) : undefined) ?? 0.8
+        group = {
+          color: info?.hex || "#231F20",
+          nibMm: nib,
+          dParts: [],
+          lastX: Number.NaN,
+          lastY: Number.NaN,
+        }
+        byTool.set(toolNum, group)
+      }
+      if (
+        !Number.isFinite(group.lastX) ||
+        Math.hypot(x0 - group.lastX, y0 - group.lastY) > 1e-3
+      ) {
+        group.dParts.push(
+          `M${x0.toFixed(2)},${y0.toFixed(2)}L${x1.toFixed(2)},${y1.toFixed(2)}`
+        )
+      } else {
+        group.dParts.push(`L${x1.toFixed(2)},${y1.toFixed(2)}`)
+      }
+      group.lastX = x1
+      group.lastY = y1
+    }
+
+    return {
+      rapidPath: rapidParts.join(""),
+      drawGroups: Array.from(byTool.entries()).map(([tool, g]) => ({
+        tool,
+        color: g.color,
+        nibMm: g.nibMm,
+        d: g.dParts.join(""),
+      })),
+    }
+  }, [parsedGcode, pens, paperHeightMm, showRapids, activeToolFilter])
 
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#F2EFE9] text-[#231F20]">
@@ -547,8 +785,8 @@ export function App() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="expo">Expo (RGBK)</SelectItem>
                       <SelectItem value="cmyk">CMYK</SelectItem>
-                      <SelectItem value="expo">Expo</SelectItem>
                       <SelectItem value="mono">Monochrome</SelectItem>
                     </SelectContent>
                   </Select>
@@ -608,67 +846,105 @@ export function App() {
               </div>
             </section>
 
-            {/* 3. Raster Image Trace (only shown when a raster image is loaded) */}
-            {sourceKind === "raster" && (
-              <>
-                <Separator />
-                <section className="space-y-2">
-                  <Label className="text-xs font-semibold block">
-                    Photo Trace
+            {/* 3. Raster Image Trace */}
+            <Separator />
+            <section className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold">Image Trace</Label>
+                <span className="text-[10px] font-mono text-[#6B6661]">
+                  {sourceKind === "raster" ? "Active" : "For PNG/JPG"}
+                </span>
+              </div>
+              <div className="grid grid-cols-[1fr_84px] gap-2">
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-[#6B6661]">Mode</Label>
+                  <Select
+                    value={traceStyle}
+                    onValueChange={handleTraceStyleChange}
+                  >
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="centerline">Centerline</SelectItem>
+                      <SelectItem value="one-line">One-Line</SelectItem>
+                      <SelectItem value="tone">Line Screen</SelectItem>
+                      <SelectItem value="fill">Filled Regions</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-[#6B6661]">
+                    Resolution (px)
                   </Label>
-                  <div className="grid grid-cols-[1fr_84px] gap-2">
-                    <div className="space-y-1">
-                      <Label className="text-[11px] text-[#6B6661]">Mode</Label>
-                      <Select value={traceStyle} onValueChange={setTraceStyle}>
-                        <SelectTrigger className="h-7 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="one-line">One-Line</SelectItem>
-                          <SelectItem value="tone">Line Screen</SelectItem>
-                          <SelectItem value="fill">Filled Regions</SelectItem>
-                          <SelectItem value="centerline">Centerline</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-[11px] text-[#6B6661]">
-                        Scale (px)
-                      </Label>
-                      <Input
-                        type="number"
-                        min={40}
-                        max={600}
-                        step={10}
-                        value={resolution}
-                        onChange={(e) =>
-                          setResolution(Number(e.target.value) || 140)
-                        }
-                        className="h-7 font-mono text-xs"
-                      />
-                    </div>
-                  </div>
+                  <Input
+                    type="number"
+                    min={40}
+                    max={4000}
+                    step={10}
+                    value={resolution}
+                    onChange={(e) =>
+                      setResolution(Number(e.target.value) || 1536)
+                    }
+                    className="h-7 font-mono text-xs"
+                  />
+                </div>
+              </div>
 
-                  {traceStyle === "one-line" && (
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[11px] text-[#6B6661]">
-                        <span>Max pen lifts</span>
-                        <span className="font-mono text-[#231F20]">
-                          {breaks}
-                        </span>
-                      </div>
-                      <Slider
-                        min={0}
-                        max={12}
-                        step={1}
-                        value={[breaks]}
-                        onValueChange={([v]) => setBreaks(v)}
-                      />
-                    </div>
-                  )}
-                </section>
-              </>
-            )}
+              {(traceStyle === "centerline" || traceStyle === "fill") && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-[11px] text-[#6B6661]">
+                      Smoothing (odd px)
+                    </Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={15}
+                      step={2}
+                      value={smoothing}
+                      onChange={(e) => {
+                        const raw = Math.max(1, Number(e.target.value) || 1)
+                        setSmoothing(raw % 2 === 0 ? raw + 1 : raw)
+                      }}
+                      className="h-7 font-mono text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px] text-[#6B6661]">
+                      Speckle (px)
+                    </Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={50}
+                      step={1}
+                      value={speckle}
+                      onChange={(e) =>
+                        setSpeckle(Math.max(0, Number(e.target.value) || 0))
+                      }
+                      className="h-7 font-mono text-xs"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {traceStyle === "one-line" && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-[#6B6661]">
+                    <span>Max pen lifts</span>
+                    <span className="font-mono text-[#231F20]">{breaks}</span>
+                  </div>
+                  <Slider
+                    min={0}
+                    max={12}
+                    step={1}
+                    value={[breaks]}
+                    onValueChange={([v]) => setBreaks(v)}
+                  />
+                </div>
+              )}
+            </section>
 
             <Separator />
 
@@ -699,6 +975,10 @@ export function App() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="corners">
+                        4 Corners ({cornersPaper.replace("x", " × ")} mm)
+                      </SelectItem>
+                      <SelectItem value="294x200">294 × 200 mm</SelectItem>
                       <SelectItem value="250x250">250 × 250 mm</SelectItem>
                       <SelectItem value="A4">A4 (210 × 297)</SelectItem>
                       <SelectItem value="A3">A3 (297 × 420)</SelectItem>
@@ -717,7 +997,7 @@ export function App() {
                     <Input
                       value={customPaper}
                       onChange={(e) => setCustomPaper(e.target.value)}
-                      placeholder="250x250"
+                      placeholder="294x200"
                       className="h-7 font-mono text-xs"
                     />
                   ) : (
@@ -787,7 +1067,7 @@ export function App() {
                     min={0.5}
                     step={0.5}
                     value={lift}
-                    onChange={(e) => setLift(Number(e.target.value) || 2)}
+                    onChange={(e) => setLift(Number(e.target.value) || 6)}
                     className="h-7 font-mono text-xs"
                   />
                 </div>
@@ -897,32 +1177,29 @@ export function App() {
                     />
                   </g>
 
-                  {visibleSegments.map((seg, idx) => {
-                    const toolInfo =
-                      seg.tool !== null ? parsedGcode.tools.get(seg.tool) : undefined
-                    const penColor = toolInfo?.hex || "#231F20"
-                    const toolNib =
-                      (seg.tool !== null ? pens[seg.tool - 1]?.nibMm : undefined) ??
-                      0.8
-                    return (
-                      <line
-                        key={idx}
-                        x1={seg.x0}
-                        y1={paperHeightMm - seg.y0}
-                        x2={seg.x1}
-                        y2={paperHeightMm - seg.y1}
-                        stroke={seg.rapid ? "#9E9890" : penColor}
-                        strokeWidth={
-                          seg.rapid
-                            ? Math.max(paperWidthMm, paperHeightMm) * 0.0018
-                            : toolNib
-                        }
-                        strokeDasharray={seg.rapid ? "2 2" : undefined}
-                        strokeLinecap="round"
-                        opacity={seg.rapid ? 0.45 : 0.92}
-                      />
-                    )
-                  })}
+                  {toolPaths.rapidPath && (
+                    <path
+                      d={toolPaths.rapidPath}
+                      fill="none"
+                      stroke="#9E9890"
+                      strokeWidth={Math.max(paperWidthMm, paperHeightMm) * 0.0015}
+                      strokeDasharray="2 2"
+                      opacity={0.4}
+                    />
+                  )}
+
+                  {toolPaths.drawGroups.map((group) => (
+                    <path
+                      key={group.tool}
+                      d={group.d}
+                      fill="none"
+                      stroke={group.color}
+                      strokeWidth={group.nibMm}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      opacity={0.95}
+                    />
+                  ))}
                 </svg>
               </div>
 
@@ -1055,7 +1332,7 @@ export function App() {
                 <div className="inline-flex rounded-sm border border-[#DCD9D0] bg-[#F2EFE9] p-0.5 text-[10px] font-medium">
                   <button
                     type="button"
-                    onClick={() => setPlacementMode("origin")}
+                    onClick={() => handlePlacementModeChange("origin")}
                     className={`px-2 py-0.5 rounded-[2px] cursor-pointer transition-colors ${
                       placementMode === "origin"
                         ? "bg-[#231F20] text-[#FBFBF9]"
@@ -1066,7 +1343,7 @@ export function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setPlacementMode("corners")}
+                    onClick={() => handlePlacementModeChange("corners")}
                     className={`px-2 py-0.5 rounded-[2px] cursor-pointer transition-colors ${
                       placementMode === "corners"
                         ? "bg-[#231F20] text-[#FBFBF9]"
@@ -1116,12 +1393,47 @@ export function App() {
                 </div>
               ) : (
                 <div className="space-y-1">
-                  <div className="grid grid-cols-[24px_1fr_1fr_1fr_24px] gap-1 items-center text-[10px] font-mono text-[#6B6661]">
-                    <span />
-                    <span>X</span>
-                    <span>Y</span>
-                    <span>Z</span>
-                    <span />
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-[#6B6661]">
+                      Corners X, Y, Z (mm)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSortCorners}
+                        title="Sort the 4 points anticlockwise into BL, BR, TR, TL"
+                        className="inline-flex items-center gap-0.5 text-[11px] text-[#006699] hover:underline cursor-pointer"
+                      >
+                        <ArrowUpDown className="h-3 w-3" />
+                        <span>Sort</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRotateCorners}
+                        title="Cycle corners 90° anticlockwise (BL ← BR ← TR ← TL)"
+                        className="inline-flex items-center gap-0.5 text-[11px] text-[#006699] hover:underline cursor-pointer"
+                      >
+                        <RotateCw className="h-3 w-3" />
+                        <span>90°</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveCorners}
+                        className="inline-flex items-center gap-0.5 text-[11px] text-[#006699] hover:underline cursor-pointer"
+                      >
+                        {cornersSaved ? (
+                          <>
+                            <Check className="h-3 w-3 text-[#00843D]" />
+                            <span className="text-[#00843D]">Saved</span>
+                          </>
+                        ) : (
+                          <>
+                            <Save className="h-3 w-3" />
+                            <span>Save</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
                   {CORNER_LABELS.map(({ key, code, title }) => (
                     <div
@@ -1195,7 +1507,7 @@ export function App() {
                     max={6000}
                     step={250}
                     value={rapid}
-                    onChange={(e) => setRapid(Number(e.target.value) || 3000)}
+                    onChange={(e) => setRapid(Number(e.target.value) || 1500)}
                     className="h-7 font-mono text-xs"
                   />
                 </div>

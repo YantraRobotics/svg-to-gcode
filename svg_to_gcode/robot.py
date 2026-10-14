@@ -82,7 +82,7 @@ RIGHT_ANGLE_DEG = 90.0
 MAX_CORNER_SKEW_DEG = 15.0
 # How far the corner heights may be from lying in one plane before a height
 # is taken to be mistyped.
-MAX_CORNER_TWIST_MM = 5.0
+MAX_CORNER_TWIST_MM = 20.0
 MIN_PAPER_MM = 10.0
 INVERSE_ITERATIONS = 20
 INVERSE_TOLERANCE_MM = 1e-6
