@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  ArrowLeft,
+  ArrowRight,
   ArrowUpDown,
   Check,
   Crosshair,
@@ -12,6 +14,7 @@ import {
   RefreshCw,
   RotateCw,
   Save,
+  Square,
   Upload,
   X,
 } from "lucide-react"
@@ -61,6 +64,13 @@ interface DrawSummary {
   bounds_mm: { min: number[]; max: number[] }
   dry_run: boolean
   worst_error_mm?: number
+}
+
+interface ConveyorState {
+  running: boolean
+  state: string
+  direction: "FWD" | "REV"
+  port?: string
 }
 
 const PEN_PRESETS: Record<string, PenEntry[]> = {
@@ -247,6 +257,10 @@ export function App() {
   const [swapWait, setSwapWait] = useState<number>(5)
   const [robotHost, setRobotHost] = useState<string>("192.168.1.69")
 
+  const [conveyorState, setConveyorState] = useState<ConveyorState | null>(null)
+  const [conveyorPort, setConveyorPort] = useState<string>("")
+  const [conveyorBusy, setConveyorBusy] = useState<boolean>(false)
+
   const [tracedSvg, setTracedSvg] = useState<string>(SAMPLE_ROSE_SVG)
   const [gcodeText, setGcodeText] = useState<string>("")
   const [drawSummary, setDrawSummary] = useState<DrawSummary | null>(null)
@@ -379,6 +393,16 @@ export function App() {
     void fetch("/health")
       .then((res) => setServerOnline(res.ok))
       .catch(() => setServerOnline(false))
+    void fetch("/conveyor?cmd=STATUS")
+      .then(async (res) => {
+        if (res.ok) {
+          const data = (await res.json()) as ConveyorState
+          setConveyorState(data)
+        }
+      })
+      .catch(() => {
+        // conveyor serial port not attached yet
+      })
   }, [])
 
   useEffect(() => {
@@ -537,6 +561,31 @@ export function App() {
     }
   }
 
+  const handleConveyorCommand = async (
+    cmd: "START" | "STOP" | "FWD" | "REV" | "STATUS"
+  ) => {
+    setConveyorBusy(true)
+    setErrorMessage(null)
+    try {
+      const params = new URLSearchParams({ cmd })
+      if (conveyorPort.trim()) {
+        params.set("port", conveyorPort.trim())
+      }
+      const res = await fetch(`/conveyor?${params.toString()}`, {
+        method: "POST",
+      })
+      const payload = await res.json()
+      if (!res.ok) {
+        throw new Error(payload.error || "Conveyor command failed")
+      }
+      setConveyorState(payload as ConveyorState)
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setConveyorBusy(false)
+    }
+  }
+
   const handleTeachCorner = async (key: CornerKey) => {
     setBusy(`Teaching ${key.toUpperCase()}...`)
     setErrorMessage(null)
@@ -679,6 +728,58 @@ export function App() {
         </div>
 
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 rounded-sm border border-[#DCD9D0] bg-[#F2EFE9] px-1.5 py-0.5 text-[10px] font-mono">
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                conveyorState?.running
+                  ? "bg-[#00843D] animate-pulse"
+                  : conveyorState
+                    ? "bg-[#6B6661]"
+                    : "bg-[#DCD9D0]"
+              }`}
+            />
+            <span className="text-[#6B6661]">Conveyor</span>
+            <button
+              type="button"
+              disabled={conveyorBusy}
+              onClick={() =>
+                void handleConveyorCommand(
+                  conveyorState?.direction === "REV" ? "FWD" : "REV"
+                )
+              }
+              title="Toggle conveyor direction (FWD / REV)"
+              className="px-1 py-0.2 rounded-[2px] bg-[#E8E5DC] hover:bg-[#DCD9D0] text-[#231F20] cursor-pointer disabled:opacity-50"
+            >
+              {conveyorState?.direction ?? "FWD"}
+            </button>
+            <button
+              type="button"
+              disabled={conveyorBusy}
+              onClick={() =>
+                void handleConveyorCommand(
+                  conveyorState?.running ? "STOP" : "START"
+                )
+              }
+              className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded-[2px] font-medium cursor-pointer disabled:opacity-50 ${
+                conveyorState?.running
+                  ? "bg-[#D52B1E] text-white hover:bg-[#b52217]"
+                  : "bg-[#231F20] text-[#FBFBF9] hover:bg-[#3a3537]"
+              }`}
+            >
+              {conveyorState?.running ? (
+                <>
+                  <Square className="h-2.5 w-2.5 fill-current" />
+                  Stop
+                </>
+              ) : (
+                <>
+                  <Play className="h-2.5 w-2.5 fill-current" />
+                  Start
+                </>
+              )}
+            </button>
+          </div>
+
           <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-sm border border-[#DCD9D0] bg-[#F2EFE9] text-[10px] font-mono">
             <span
               className={`h-1.5 w-1.5 rounded-full ${
@@ -1535,6 +1636,87 @@ export function App() {
                   onChange={(e) => setRobotHost(e.target.value)}
                   className="h-7 font-mono text-xs"
                 />
+              </div>
+
+              <Separator />
+
+              {/* ESP32 Conveyor Belt Control */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold">Conveyor Belt</Label>
+                  <span className="text-[10px] font-mono text-[#6B6661]">
+                    {conveyorState
+                      ? `${conveyorState.state} · ${conveyorState.direction}`
+                      : "ESP32 UART"}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-[1fr_auto_auto] gap-1.5 items-center">
+                  <Input
+                    value={conveyorPort}
+                    onChange={(e) => setConveyorPort(e.target.value)}
+                    placeholder={conveyorState?.port || "Auto USB port"}
+                    title="ESP32 serial port (leave blank to auto-detect)"
+                    className="h-7 font-mono text-[11px]"
+                  />
+                  <div className="inline-flex rounded-sm border border-[#DCD9D0] bg-[#F2EFE9] p-0.5 text-[10px] font-mono">
+                    <button
+                      type="button"
+                      disabled={conveyorBusy}
+                      onClick={() => void handleConveyorCommand("FWD")}
+                      title="Forward direction"
+                      className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-[2px] cursor-pointer ${
+                        (conveyorState?.direction ?? "FWD") === "FWD"
+                          ? "bg-[#231F20] text-[#FBFBF9]"
+                          : "text-[#6B6661] hover:text-[#231F20]"
+                      }`}
+                    >
+                      <ArrowRight className="h-2.5 w-2.5" />
+                      FWD
+                    </button>
+                    <button
+                      type="button"
+                      disabled={conveyorBusy}
+                      onClick={() => void handleConveyorCommand("REV")}
+                      title="Reverse direction"
+                      className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-[2px] cursor-pointer ${
+                        conveyorState?.direction === "REV"
+                          ? "bg-[#231F20] text-[#FBFBF9]"
+                          : "text-[#6B6661] hover:text-[#231F20]"
+                      }`}
+                    >
+                      <ArrowLeft className="h-2.5 w-2.5" />
+                      REV
+                    </button>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant={conveyorState?.running ? "destructive" : "default"}
+                    disabled={conveyorBusy}
+                    onClick={() =>
+                      void handleConveyorCommand(
+                        conveyorState?.running ? "STOP" : "START"
+                      )
+                    }
+                    className={`h-7 px-2.5 text-xs ${
+                      conveyorState?.running
+                        ? "bg-[#D52B1E] hover:bg-[#b52217] text-white"
+                        : ""
+                    }`}
+                  >
+                    {conveyorState?.running ? (
+                      <>
+                        <Square className="h-3 w-3 fill-current" />
+                        Stop
+                      </>
+                    ) : (
+                      <>
+                        <Play className="h-3 w-3 fill-current" />
+                        Start
+                      </>
+                    )}
+                  </Button>
+                </div>
               </div>
             </section>
           </div>

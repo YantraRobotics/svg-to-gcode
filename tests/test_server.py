@@ -121,3 +121,55 @@ def test_centerline_preserves_thin_line_art(base_url):
     with urlopen(req) as response:
         svg_body = response.read().decode("utf-8")
         assert "<path" in svg_body
+
+
+def test_conveyor_endpoint_and_cli(base_url, monkeypatch):
+    parser = main.build_parser()
+    parsed = parser.parse_args(
+        ["conveyor", "--serial-port", "/dev/cu.usbserial-0001", "fwd", "start"]
+    )
+    assert parsed.command == "conveyor"
+    assert parsed.serial_port == "/dev/cu.usbserial-0001"
+    assert parsed.commands == ["fwd", "start"]
+
+    sent: list[str] = []
+
+    class FakeConveyor:
+        def __init__(self, port=None, baud=115200):
+            self.ser = type("FakeSer", (), {"port": port or "/dev/cu.usbserial-0001"})()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def send(self, cmd: str):
+            sent.append(cmd)
+            if cmd == "START":
+                return True, ["RUNNING", "FWD"]
+            if cmd == "STOP":
+                return True, ["STOPPED", "FWD"]
+            if cmd == "REV":
+                return True, ["RUNNING", "REV"]
+            return True, ["STOPPED", "FWD"]
+
+    monkeypatch.setattr(server.conveyor, "Conveyor", FakeConveyor)
+
+    start_req = Request(f"{base_url}/conveyor?cmd=start", data=b"", method="POST")
+    with urlopen(start_req) as response:
+        payload = json.loads(response.read())
+        assert payload == {
+            "running": True,
+            "state": "RUNNING",
+            "direction": "FWD",
+            "port": "/dev/cu.usbserial-0001",
+        }
+
+    stop_req = Request(f"{base_url}/conveyor?cmd=stop", data=b"", method="POST")
+    with urlopen(stop_req) as response:
+        payload = json.loads(response.read())
+        assert payload["running"] is False
+        assert payload["state"] == "STOPPED"
+
+    assert sent == ["START", "STOP"]

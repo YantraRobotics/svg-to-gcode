@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from xml.etree.ElementTree import ParseError
 
+import conveyor as conveyor_tool
 import prepare_owl69_model
 from robot_interface import Shell, add_endpoint_arguments, resolve_endpoints
 from svg_to_gcode import gcode, image, pens, robot, server, viewer
@@ -291,6 +292,20 @@ def run_serve(args: argparse.Namespace) -> int:
     if port is None:
         raise ValueError("pass a port number, e.g. serve 8000 or --port 8000")
     return server.serve(args.bind, port)
+
+
+def run_conveyor(args: argparse.Namespace) -> int:
+    with conveyor_tool.Conveyor(args.serial_port, args.baud) as conv:
+        if args.test:
+            return 0 if conveyor_tool.self_test(conv) else 1
+        if args.commands:
+            return (
+                0
+                if all(conveyor_tool.run_command(conv, cmd) for cmd in args.commands)
+                else 1
+            )
+        conveyor_tool.interactive(conv)
+        return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -716,6 +731,34 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"address to bind (default {server.DEFAULT_HOST})",
     )
     serve.set_defaults(handler=run_serve)
+
+    conveyor_cmd = commands.add_parser(
+        "conveyor",
+        help="control the ESP32 conveyor over UART (start, stop, fwd, rev, status)",
+    )
+    conveyor_cmd.add_argument(
+        "commands",
+        nargs="*",
+        help="commands to send in order; omit for interactive mode",
+    )
+    conveyor_cmd.add_argument(
+        "--serial-port",
+        "-s",
+        help="serial port (auto-detected if omitted)",
+    )
+    conveyor_cmd.add_argument(
+        "--baud",
+        "-b",
+        type=positive_int,
+        default=conveyor_tool.DEFAULT_BAUD,
+        help=f"UART baud rate (default {conveyor_tool.DEFAULT_BAUD})",
+    )
+    conveyor_cmd.add_argument(
+        "--test",
+        action="store_true",
+        help="run the motor through every command and verify replies",
+    )
+    conveyor_cmd.set_defaults(handler=run_conveyor)
     return parser
 
 

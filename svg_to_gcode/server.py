@@ -14,6 +14,7 @@ from xml.etree.ElementTree import ParseError
 
 from PIL import UnidentifiedImageError
 
+import conveyor
 from robot_interface import CMD_PORT, DEFAULT_HOST, PUB_PORT, Shell
 from svg_to_gcode import gcode, image, pens, robot
 
@@ -300,6 +301,31 @@ def run_teach_request(params: dict[str, list[str]]) -> dict[str, object]:
     return {"origin": [round(x, 1), round(y, 1), round(z, 1)]}
 
 
+def run_conveyor_request(params: dict[str, list[str]]) -> dict[str, object]:
+    cmd = query_str(params, "cmd", "STATUS").upper()
+    if cmd not in conveyor.COMMANDS:
+        raise ValueError(
+            f"cmd must be one of {', '.join(conveyor.COMMANDS)}, got {cmd!r}"
+        )
+    serial_port = query_str(params, "port", "") or None
+    baud = query_int(params, "baud", conveyor.DEFAULT_BAUD)
+    if baud <= 0:
+        raise ValueError(f"baud must be positive, got {baud}")
+    with conveyor.Conveyor(serial_port, baud) as conv:
+        ok, fields = conv.send(cmd)
+        port_name = conv.ser.port
+    if not ok:
+        raise ValueError(" ".join(fields) or f"conveyor rejected {cmd}")
+    state = fields[0] if len(fields) >= 1 else "UNKNOWN"
+    direction = fields[1] if len(fields) >= 2 else "FWD"
+    return {
+        "running": state == "RUNNING",
+        "state": state,
+        "direction": direction,
+        "port": port_name,
+    }
+
+
 def json_response(status: HTTPStatus, payload: dict[str, object]) -> Response:
     return Response(
         status,
@@ -327,6 +353,11 @@ def dispatch(method: str, target: str, body: bytes, content_type: str = "") -> R
     if method == "GET":
         if path == "/health":
             return json_response(HTTPStatus.OK, {"status": "ok"})
+        if path == "/conveyor":
+            try:
+                return json_response(HTTPStatus.OK, run_conveyor_request(params))
+            except (ValueError, RuntimeError, TimeoutError, OSError) as exc:
+                return json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         served = static_response(path)
         if served is not None:
             return served
@@ -358,8 +389,13 @@ def dispatch(method: str, target: str, body: bytes, content_type: str = "") -> R
         if path == "/teach":
             result = run_teach_request(params)
             return json_response(HTTPStatus.OK, result)
+        if path == "/conveyor":
+            result = run_conveyor_request(params)
+            return json_response(HTTPStatus.OK, result)
     except (
         ValueError,
+        RuntimeError,
+        TimeoutError,
         ParseError,
         UnicodeDecodeError,
         UnidentifiedImageError,
