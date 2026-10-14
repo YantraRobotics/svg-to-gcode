@@ -96,11 +96,14 @@ def svg_to_layers(
             for points in _flatten(shape.path, tolerance / scale)
         ]
         if shape.fill is not None:
-            if hatch_spacing > 0:
+            spacing = (
+                shape.fill.nib_mm
+                if shape.fill.nib_mm is not None and hatch_spacing > 0
+                else hatch_spacing
+            )
+            if spacing > 0:
                 angle = hatch_angle + angle_step * pens.index(shape.fill)
-                strokes[shape.fill] += hatch(
-                    polylines, hatch_spacing, angle, shape.evenodd
-                )
+                strokes[shape.fill] += hatch(polylines, spacing, angle, shape.evenodd)
             if outline:
                 strokes[shape.fill] += [
                     _closed(ring) for ring in polylines if ring_area(ring) > 0

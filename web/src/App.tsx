@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  Crosshair,
   Download,
   FileCode2,
   Image as ImageIcon,
@@ -7,14 +8,12 @@ import {
   Play,
   Plus,
   RefreshCw,
-  Sparkles,
-  Trash2,
   Upload,
+  X,
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -37,7 +36,18 @@ import {
 interface PenEntry {
   name: string
   hex: string
+  nibMm: number
 }
+
+type CornerKey = "bl" | "br" | "tr" | "tl"
+type CornerCoords = [string, string, string]
+
+const CORNER_LABELS: { key: CornerKey; code: string; title: string }[] = [
+  { key: "bl", code: "BL", title: "Bottom-Left" },
+  { key: "br", code: "BR", title: "Bottom-Right" },
+  { key: "tr", code: "TR", title: "Top-Right" },
+  { key: "tl", code: "TL", title: "Top-Left" },
+]
 
 interface DrawSummary {
   moves: number
@@ -51,22 +61,31 @@ interface DrawSummary {
 
 const PEN_PRESETS: Record<string, PenEntry[]> = {
   cmyk: [
-    { name: "yellow", hex: "#FFF200" },
-    { name: "cyan", hex: "#00AEEF" },
-    { name: "magenta", hex: "#EC008C" },
-    { name: "black", hex: "#231F20" },
+    { name: "yellow", hex: "#FFF200", nibMm: 0.8 },
+    { name: "cyan", hex: "#00AEEF", nibMm: 0.8 },
+    { name: "magenta", hex: "#EC008C", nibMm: 0.8 },
+    { name: "black", hex: "#231F20", nibMm: 0.8 },
   ],
   expo: [
-    { name: "red", hex: "#D52B1E" },
-    { name: "green", hex: "#00843D" },
-    { name: "blue", hex: "#1B4F9C" },
-    { name: "black", hex: "#231F20" },
+    { name: "red", hex: "#D52B1E", nibMm: 2.0 },
+    { name: "green", hex: "#00843D", nibMm: 2.0 },
+    { name: "blue", hex: "#1B4F9C", nibMm: 2.0 },
+    { name: "black", hex: "#231F20", nibMm: 2.0 },
   ],
-  mono: [{ name: "black", hex: "#231F20" }],
+  mono: [{ name: "black", hex: "#231F20", nibMm: 0.5 }],
 }
 
 function serializePens(pens: PenEntry[]): string {
-  return pens.map((p) => `${p.name.trim()}=${p.hex.toUpperCase()}`).join(",")
+  return pens
+    .map(
+      (p) =>
+        `${p.name.trim()}=${p.hex.toUpperCase()}:${Math.max(0.1, p.nibMm)}`
+    )
+    .join(",")
+}
+
+function serializeCorners(corners: Record<CornerKey, CornerCoords>): string {
+  return CORNER_LABELS.flatMap(({ key }) => corners[key]).join(",")
 }
 
 export function App() {
@@ -79,12 +98,11 @@ export function App() {
     new TextEncoder().encode(SAMPLE_ROSE_SVG)
   )
 
+  const [penPreset, setPenPreset] = useState<string>("cmyk")
   const [pens, setPens] = useState<PenEntry[]>(PEN_PRESETS.cmyk)
+
   const [traceStyle, setTraceStyle] = useState<string>("one-line")
   const [resolution, setResolution] = useState<number>(140)
-  const [smoothing, setSmoothing] = useState<number>(5)
-  const [speckle, setSpeckle] = useState<number>(8)
-  const [blend, setBlend] = useState<number>(2)
   const [breaks, setBreaks] = useState<number>(3)
 
   const [paperPreset, setPaperPreset] = useState<string>("250x250")
@@ -96,9 +114,18 @@ export function App() {
   const [feed, setFeed] = useState<number>(1000)
   const [lift, setLift] = useState<number>(2)
 
+  const [placementMode, setPlacementMode] = useState<"origin" | "corners">(
+    "origin"
+  )
   const [originX, setOriginX] = useState<string>("-125")
   const [originY, setOriginY] = useState<string>("-460")
   const [originZ, setOriginZ] = useState<string>("30.6")
+  const [corners, setCorners] = useState<Record<CornerKey, CornerCoords>>({
+    bl: ["-125", "-460", "30.6"],
+    br: ["125", "-460", "30.6"],
+    tr: ["125", "-210", "30.6"],
+    tl: ["-125", "-210", "30.6"],
+  })
   const [penOffset, setPenOffset] = useState<string>("40")
   const [tilt, setTilt] = useState<number>(0)
   const [rapid, setRapid] = useState<number>(3000)
@@ -122,13 +149,20 @@ export function App() {
 
   const parsedGcode = useMemo(() => parseGcode(gcodeText), [gcodeText])
 
+  const buildPlacementParam = useCallback((): Record<string, string> => {
+    if (placementMode === "corners") {
+      return { corners: serializeCorners(corners) }
+    }
+    return { origin: `${originX},${originY},${originZ}` }
+  }, [placementMode, corners, originX, originY, originZ])
+
   const runPipeline = useCallback(
     async (
       bytes: Uint8Array,
       kind: "svg" | "raster",
       currentPens: PenEntry[]
     ) => {
-      setBusy("Compiling toolpath...")
+      setBusy("Compiling...")
       setErrorMessage(null)
       try {
         const penParam = serializePens(currentPens)
@@ -138,9 +172,6 @@ export function App() {
             pens: penParam,
             style: traceStyle,
             resolution: String(resolution),
-            smoothing: String(smoothing),
-            speckle: String(speckle),
-            blend: String(blend),
             breaks: String(breaks),
           })
           const imgRes = await fetch(`/image?${imgParams.toString()}`, {
@@ -182,7 +213,7 @@ export function App() {
         setGcodeText(compiledGcode)
 
         const drawParams = new URLSearchParams({
-          origin: `${originX},${originY},${originZ}`,
+          ...buildPlacementParam(),
           tilt: String(tilt),
           rapid: String(rapid),
           dry_run: "true",
@@ -205,9 +236,6 @@ export function App() {
     [
       traceStyle,
       resolution,
-      smoothing,
-      speckle,
-      blend,
       breaks,
       effectivePaper,
       margin,
@@ -216,9 +244,7 @@ export function App() {
       outline,
       feed,
       lift,
-      originX,
-      originY,
-      originZ,
+      buildPlacementParam,
       tilt,
       rapid,
     ]
@@ -256,13 +282,22 @@ export function App() {
     await runPipeline(bytes, "svg", pens)
   }
 
+  const handlePresetChange = (presetKey: string) => {
+    setPenPreset(presetKey)
+    const preset = PEN_PRESETS[presetKey]
+    if (preset) {
+      setPens(preset.map((p) => ({ ...p })))
+      setHatchSpacing(preset[0].nibMm)
+    }
+  }
+
   const handleExecuteOnRobot = async (dryRun: boolean) => {
     if (!gcodeText) return
-    setBusy(dryRun ? "Checking reachability..." : "Streaming twists to Owl 6.9...")
+    setBusy(dryRun ? "Checking reachability..." : "Streaming twists...")
     setErrorMessage(null)
     try {
       const params = new URLSearchParams({
-        origin: `${originX},${originY},${originZ}`,
+        ...buildPlacementParam(),
         pen_offset: penOffset,
         tilt: String(tilt),
         rapid: String(rapid),
@@ -290,28 +325,58 @@ export function App() {
     }
   }
 
+  const fetchTaughtPoint = async (): Promise<[string, string, string]> => {
+    const params = new URLSearchParams({
+      pen_offset: penOffset,
+      host: robotHost,
+    })
+    const res = await fetch(`/teach?${params.toString()}`, { method: "POST" })
+    const payload = await res.json()
+    if (!res.ok) {
+      throw new Error(payload.error || "Teach failed")
+    }
+    const [x, y, z] = payload.origin as [number, number, number]
+    return [String(x), String(y), String(z)]
+  }
+
   const handleTeachOrigin = async () => {
-    setBusy("Reading pen tip from controller...")
+    setBusy("Teaching origin...")
     setErrorMessage(null)
     try {
-      const params = new URLSearchParams({
-        pen_offset: penOffset,
-        host: robotHost,
-      })
-      const res = await fetch(`/teach?${params.toString()}`, { method: "POST" })
-      const payload = await res.json()
-      if (!res.ok) {
-        throw new Error(payload.error || "Teach failed")
-      }
-      const [x, y, z] = payload.origin as [number, number, number]
-      setOriginX(String(x))
-      setOriginY(String(y))
-      setOriginZ(String(z))
+      const [x, y, z] = await fetchTaughtPoint()
+      setOriginX(x)
+      setOriginY(y)
+      setOriginZ(z)
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(null)
     }
+  }
+
+  const handleTeachCorner = async (key: CornerKey) => {
+    setBusy(`Teaching ${key.toUpperCase()}...`)
+    setErrorMessage(null)
+    try {
+      const coords = await fetchTaughtPoint()
+      setCorners((prev) => ({ ...prev, [key]: coords }))
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const updateCornerCoord = (
+    key: CornerKey,
+    axisIndex: 0 | 1 | 2,
+    value: string
+  ) => {
+    setCorners((prev) => {
+      const next: CornerCoords = [...prev[key]] as CornerCoords
+      next[axisIndex] = value
+      return { ...prev, [key]: next }
+    })
   }
 
   const downloadFile = (content: string, filename: string, mime: string) => {
@@ -331,7 +396,12 @@ export function App() {
   }
 
   const addPen = () => {
-    setPens((prev) => [...prev, { name: `pen${prev.length + 1}`, hex: "#1B4F9C" }])
+    if (pens.length >= 6) return
+    const fallbackNib = pens[pens.length - 1]?.nibMm ?? 0.8
+    setPens((prev) => [
+      ...prev,
+      { name: `pen${prev.length + 1}`, hex: "#1B4F9C", nibMm: fallbackNib },
+    ])
   }
 
   const removePen = (index: number) => {
@@ -348,32 +418,32 @@ export function App() {
   }, [parsedGcode.segments, showRapids, activeToolFilter])
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F2EFE9] text-[#231F20]">
+    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#F2EFE9] text-[#231F20]">
       {/* Top Bar */}
-      <header className="h-12 border-b border-[#DCD9D0] bg-[#FBFBF9] px-4 flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-full bg-[#FFF200] border border-[#231F20]/30" />
-            <span className="h-2.5 w-2.5 rounded-full bg-[#00AEEF]" />
-            <span className="h-2.5 w-2.5 rounded-full bg-[#EC008C]" />
-            <span className="h-2.5 w-2.5 rounded-full bg-[#231F20]" />
+      <header className="h-11 border-b border-[#DCD9D0] bg-[#FBFBF9] px-4 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1">
+            {pens.map((p, i) => (
+              <span
+                key={i}
+                className="h-2.5 w-2.5 rounded-full border border-black/20"
+                style={{ backgroundColor: p.hex }}
+              />
+            ))}
           </div>
           <Separator orientation="vertical" className="h-4" />
-          <h1 className="text-sm font-semibold tracking-tight">
+          <h1 className="text-xs font-semibold tracking-tight">
             Owl 6.9 Plotter Workbench
           </h1>
-          <Badge variant="secondary" className="font-mono text-[11px]">
+          <Badge variant="secondary" className="font-mono text-[10px]">
             {sourceName}
-          </Badge>
-          <Badge variant="outline" className="font-mono text-[11px]">
-            {paperWidthMm} × {paperHeightMm} mm
           </Badge>
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-sm border border-[#DCD9D0] bg-[#F2EFE9] text-[11px] font-mono">
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-sm border border-[#DCD9D0] bg-[#F2EFE9] text-[10px] font-mono">
             <span
-              className={`h-2 w-2 rounded-full ${
+              className={`h-1.5 w-1.5 rounded-full ${
                 serverOnline ? "bg-[#00843D]" : "bg-[#D52B1E]"
               }`}
             />
@@ -393,7 +463,7 @@ export function App() {
             disabled={!tracedSvg}
           >
             <Download />
-            Export SVG
+            SVG
           </Button>
           <Button
             variant="default"
@@ -408,30 +478,28 @@ export function App() {
             disabled={!gcodeText}
           >
             <Download />
-            Download G-code
+            G-code
           </Button>
         </div>
       </header>
 
-      {/* Main Workspace */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[360px_1fr_320px] min-h-0">
-        {/* Left Column: Source, Pens & Conversion Controls */}
-        <aside className="border-r border-[#DCD9D0] bg-[#FBFBF9] p-4 space-y-4 overflow-y-auto">
-          {/* File Dropzone */}
-          <Card>
-            <CardHeader className="pb-2">
+      {/* Main Single-Viewport Grid */}
+      <div className="flex-1 grid grid-cols-[296px_1fr_304px] min-h-0 overflow-hidden">
+        {/* Left Sidebar: Clean Flat Sections */}
+        <aside className="border-r border-[#DCD9D0] bg-[#FBFBF9] px-4 py-3 flex flex-col justify-between min-h-0 overflow-hidden">
+          <div className="space-y-3 min-h-0">
+            {/* 1. Source */}
+            <section className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <CardTitle>Artwork Source</CardTitle>
+                <Label className="text-xs font-semibold">Source File</Label>
                 <button
                   type="button"
                   onClick={handleLoadSample}
                   className="text-[11px] text-[#006699] hover:underline cursor-pointer"
                 >
-                  Load sample SVG
+                  Load sample
                 </button>
               </div>
-            </CardHeader>
-            <CardContent className="space-y-2.5">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -442,7 +510,8 @@ export function App() {
                   if (file) void handleFileUpload(file)
                 }}
               />
-              <div
+              <button
+                type="button"
                 onClick={() => fileInputRef.current?.click()}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => {
@@ -450,261 +519,255 @@ export function App() {
                   const file = e.dataTransfer.files?.[0]
                   if (file) void handleFileUpload(file)
                 }}
-                className="border border-dashed border-[#DCD9D0] hover:border-[#231F20] rounded-sm p-3 text-center cursor-pointer transition-colors bg-[#F2EFE9]/50"
+                className="w-full border border-dashed border-[#DCD9D0] hover:border-[#231F20] rounded-sm px-3 py-2 flex items-center gap-2.5 cursor-pointer transition-colors bg-[#F2EFE9]/50 text-left"
               >
-                <Upload className="h-4 w-4 mx-auto mb-1 text-[#6B6661]" />
-                <p className="text-xs font-medium">
-                  Drop an SVG or photo, or click to browse
-                </p>
-                <p className="text-[11px] text-[#6B6661] mt-0.5">
-                  PNG, JPEG, WebP, or vector SVG
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Pen Carousel */}
-          <Card>
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
-                <CardTitle>Pen Set (lightest drawn first)</CardTitle>
-                <div className="flex gap-1">
-                  {(["cmyk", "expo", "mono"] as const).map((preset) => (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => setPens(PEN_PRESETS[preset])}
-                      className="px-1.5 py-0.5 text-[10px] font-mono rounded-[2px] border border-[#DCD9D0] bg-[#F2EFE9] hover:bg-[#E8E5DC] uppercase cursor-pointer"
-                    >
-                      {preset}
-                    </button>
-                  ))}
+                <Upload className="h-3.5 w-3.5 text-[#6B6661] shrink-0" />
+                <div className="truncate">
+                  <div className="text-xs font-medium truncate">
+                    {sourceName}
+                  </div>
+                  <div className="text-[10px] text-[#6B6661]">
+                    Click or drop SVG, PNG, JPEG
+                  </div>
                 </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {pens.map((pen, idx) => (
-                <div key={idx} className="flex items-center gap-2">
-                  <input
-                    type="color"
-                    value={pen.hex}
-                    onChange={(e) => updatePen(idx, { hex: e.target.value })}
-                    className="h-7 w-8 rounded-sm border border-[#DCD9D0] bg-transparent cursor-pointer p-0.5"
-                  />
-                  <Input
-                    value={pen.name}
-                    onChange={(e) => updatePen(idx, { name: e.target.value })}
-                    className="h-7 text-xs font-mono"
-                    placeholder="pen-name"
-                  />
-                  <span className="text-[11px] font-mono text-[#6B6661] w-16">
-                    {pen.hex.toUpperCase()}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={() => removePen(idx)}
-                    disabled={pens.length <= 1}
+              </button>
+            </section>
+
+            <Separator />
+
+            {/* 2. Pens & Per-Pen Nib Size */}
+            <section className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold">
+                  Pens & Nib (mm)
+                </Label>
+                <div className="flex items-center gap-2">
+                  <Select value={penPreset} onValueChange={handlePresetChange}>
+                    <SelectTrigger className="h-6 w-[110px] text-[11px] px-2">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="cmyk">CMYK</SelectItem>
+                      <SelectItem value="expo">Expo</SelectItem>
+                      <SelectItem value="mono">Monochrome</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <button
+                    type="button"
+                    onClick={addPen}
+                    disabled={pens.length >= 6}
+                    className="inline-flex items-center gap-0.5 text-[11px] text-[#006699] hover:underline cursor-pointer disabled:opacity-40"
                   >
-                    <Trash2 className="h-3.5 w-3.5 text-[#6B6661]" />
-                  </Button>
+                    <Plus className="h-3 w-3" /> Add
+                  </button>
                 </div>
-              ))}
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full mt-1"
-                onClick={addPen}
-              >
-                <Plus />
-                Add Pen
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Raster Tracing Options (shown when raster or always available) */}
-          <Card>
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
-                <CardTitle>Image Trace Style</CardTitle>
-                <Badge variant="secondary" className="text-[10px] font-mono">
-                  {sourceKind === "raster" ? "Active" : "Raster only"}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-1.5">
-                <Label>Tracing Mode</Label>
-                <Select value={traceStyle} onValueChange={setTraceStyle}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="fill">Filled Regions (Logos & Flat Art)</SelectItem>
-                    <SelectItem value="tone">Line Screen Shading (Photos)</SelectItem>
-                    <SelectItem value="one-line">Continuous One-Line (Photos)</SelectItem>
-                    <SelectItem value="centerline">Centerline Skeleton (Line Art)</SelectItem>
-                  </SelectContent>
-                </Select>
               </div>
 
-              <div className="space-y-1.5">
-                <div className="flex justify-between text-xs">
-                  <Label>Resolution (long side)</Label>
-                  <span className="font-mono text-[11px] text-[#6B6661]">
-                    {resolution} px
-                  </span>
-                </div>
-                <Slider
-                  min={40}
-                  max={600}
-                  step={10}
-                  value={[resolution]}
-                  onValueChange={([v]) => setResolution(v)}
-                />
-              </div>
-
-              {traceStyle === "one-line" && (
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <Label>Max Pen Lifts (Breaks)</Label>
-                    <span className="font-mono text-[11px] text-[#6B6661]">
-                      {breaks}
-                    </span>
+              <div className="grid grid-cols-2 gap-1.5">
+                {pens.map((pen, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-center gap-1.5 rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/40 px-2 py-1"
+                  >
+                    <input
+                      type="color"
+                      value={pen.hex}
+                      onChange={(e) => updatePen(idx, { hex: e.target.value })}
+                      className="h-3.5 w-3.5 rounded-full border-0 bg-transparent cursor-pointer p-0 shrink-0"
+                    />
+                    <input
+                      value={pen.name}
+                      onChange={(e) => updatePen(idx, { name: e.target.value })}
+                      className="min-w-0 flex-1 bg-transparent text-[11px] font-mono focus:outline-none truncate"
+                    />
+                    <input
+                      type="number"
+                      min={0.1}
+                      max={10}
+                      step={0.1}
+                      value={pen.nibMm}
+                      onChange={(e) =>
+                        updatePen(idx, {
+                          nibMm: Math.max(0.1, Number(e.target.value) || 0.8),
+                        })
+                      }
+                      title="Pen nib width (mm)"
+                      className="w-9 h-5 rounded-[2px] border border-[#DCD9D0] bg-[#FBFBF9] px-1 text-right text-[11px] font-mono focus:outline-none focus:border-[#231F20]"
+                    />
+                    {pens.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removePen(idx)}
+                        className="text-[#6B6661] hover:text-[#D52B1E] cursor-pointer shrink-0"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
                   </div>
-                  <Slider
-                    min={0}
-                    max={12}
-                    step={1}
-                    value={[breaks]}
-                    onValueChange={([v]) => setBreaks(v)}
+                ))}
+              </div>
+            </section>
+
+            {/* 3. Raster Image Trace (only shown when a raster image is loaded) */}
+            {sourceKind === "raster" && (
+              <>
+                <Separator />
+                <section className="space-y-2">
+                  <Label className="text-xs font-semibold block">
+                    Photo Trace
+                  </Label>
+                  <div className="grid grid-cols-[1fr_84px] gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-[11px] text-[#6B6661]">Mode</Label>
+                      <Select value={traceStyle} onValueChange={setTraceStyle}>
+                        <SelectTrigger className="h-7 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="one-line">One-Line</SelectItem>
+                          <SelectItem value="tone">Line Screen</SelectItem>
+                          <SelectItem value="fill">Filled Regions</SelectItem>
+                          <SelectItem value="centerline">Centerline</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[11px] text-[#6B6661]">
+                        Scale (px)
+                      </Label>
+                      <Input
+                        type="number"
+                        min={40}
+                        max={600}
+                        step={10}
+                        value={resolution}
+                        onChange={(e) =>
+                          setResolution(Number(e.target.value) || 140)
+                        }
+                        className="h-7 font-mono text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  {traceStyle === "one-line" && (
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px] text-[#6B6661]">
+                        <span>Max pen lifts</span>
+                        <span className="font-mono text-[#231F20]">
+                          {breaks}
+                        </span>
+                      </div>
+                      <Slider
+                        min={0}
+                        max={12}
+                        step={1}
+                        value={[breaks]}
+                        onValueChange={([v]) => setBreaks(v)}
+                      />
+                    </div>
+                  )}
+                </section>
+              </>
+            )}
+
+            <Separator />
+
+            {/* 4. Paper & Toolpath */}
+            <section className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold">Paper & Toolpath</Label>
+                <div className="flex items-center gap-1.5">
+                  <Label
+                    htmlFor="outline-switch"
+                    className="text-[11px] text-[#6B6661] cursor-pointer"
+                  >
+                    Outline
+                  </Label>
+                  <Switch
+                    id="outline-switch"
+                    checked={outline}
+                    onCheckedChange={setOutline}
                   />
                 </div>
-              )}
+              </div>
 
-              {(traceStyle === "fill" || traceStyle === "centerline") && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="space-y-1">
-                    <Label>Smoothing (odd px)</Label>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-[#6B6661]">Paper</Label>
+                  <Select value={paperPreset} onValueChange={setPaperPreset}>
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="250x250">250 × 250 mm</SelectItem>
+                      <SelectItem value="A4">A4 (210 × 297)</SelectItem>
+                      <SelectItem value="A3">A3 (297 × 420)</SelectItem>
+                      <SelectItem value="A5">A5 (148 × 210)</SelectItem>
+                      <SelectItem value="LETTER">Letter</SelectItem>
+                      <SelectItem value="custom">Custom WxH</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-[11px] text-[#6B6661]">
+                    {paperPreset === "custom" ? "Size (WxH mm)" : "Margin (mm)"}
+                  </Label>
+                  {paperPreset === "custom" ? (
                     <Input
-                      type="number"
-                      min={1}
-                      step={2}
-                      value={smoothing}
-                      onChange={(e) => setSmoothing(Number(e.target.value) || 1)}
-                      className="font-mono"
+                      value={customPaper}
+                      onChange={(e) => setCustomPaper(e.target.value)}
+                      placeholder="250x250"
+                      className="h-7 font-mono text-xs"
                     />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Speckle (px)</Label>
+                  ) : (
                     <Input
                       type="number"
                       min={0}
                       step={1}
-                      value={speckle}
-                      onChange={(e) => setSpeckle(Number(e.target.value) || 0)}
-                      className="font-mono"
+                      value={margin}
+                      onChange={(e) => setMargin(Number(e.target.value) || 0)}
+                      className="h-7 font-mono text-xs"
                     />
-                  </div>
-                </div>
-              )}
-
-              {traceStyle === "fill" && (
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs">
-                    <Label>Max Overlapped Pens (Blend)</Label>
-                    <span className="font-mono text-[11px] text-[#6B6661]">
-                      {blend}
-                    </span>
-                  </div>
-                  <Slider
-                    min={1}
-                    max={4}
-                    step={1}
-                    value={[blend]}
-                    onValueChange={([v]) => setBlend(v)}
-                  />
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Paper & G-code Parameters */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle>Paper & Toolpath Parameters</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <Label>Paper Size</Label>
-                  <Select value={paperPreset} onValueChange={setPaperPreset}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="250x250">250 × 250 mm Square</SelectItem>
-                      <SelectItem value="A4">A4 (210 × 297 mm)</SelectItem>
-                      <SelectItem value="A3">A3 (297 × 420 mm)</SelectItem>
-                      <SelectItem value="A5">A5 (148 × 210 mm)</SelectItem>
-                      <SelectItem value="LETTER">Letter (215.9 × 279.4)</SelectItem>
-                      <SelectItem value="custom">Custom WxH...</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1">
-                  <Label>Margin (mm)</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    step={1}
-                    value={margin}
-                    onChange={(e) => setMargin(Number(e.target.value) || 0)}
-                    className="font-mono"
-                  />
+                  )}
                 </div>
               </div>
 
-              {paperPreset === "custom" && (
-                <div className="space-y-1">
-                  <Label>Custom Dimensions (WIDTHxHEIGHT mm)</Label>
-                  <Input
-                    value={customPaper}
-                    onChange={(e) => setCustomPaper(e.target.value)}
-                    placeholder="250x250"
-                    className="font-mono"
-                  />
-                </div>
-              )}
-
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <Label>Hatch Spacing (mm)</Label>
+                  <Label className="text-[11px] text-[#6B6661]">
+                    Default hatch (mm)
+                  </Label>
                   <Input
                     type="number"
                     min={0}
                     step={0.1}
                     value={hatchSpacing}
-                    onChange={(e) => setHatchSpacing(Number(e.target.value) || 0)}
-                    className="font-mono"
+                    onChange={(e) =>
+                      setHatchSpacing(Number(e.target.value) || 0)
+                    }
+                    className="h-7 font-mono text-xs"
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Hatch Angle (deg)</Label>
+                  <Label className="text-[11px] text-[#6B6661]">
+                    Hatch angle (deg)
+                  </Label>
                   <Input
                     type="number"
                     step={5}
                     value={hatchAngle}
                     onChange={(e) => setHatchAngle(Number(e.target.value) || 0)}
-                    className="font-mono"
+                    className="h-7 font-mono text-xs"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <Label>Draw Feed (mm/min)</Label>
+                  <Label className="text-[11px] text-[#6B6661]">
+                    Feed (mm/min)
+                  </Label>
                   <Input
                     type="number"
                     min={100}
@@ -712,87 +775,78 @@ export function App() {
                     step={100}
                     value={feed}
                     onChange={(e) => setFeed(Number(e.target.value) || 1000)}
-                    className="font-mono"
+                    className="h-7 font-mono text-xs"
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Pen Lift Z (mm)</Label>
+                  <Label className="text-[11px] text-[#6B6661]">
+                    Pen lift Z (mm)
+                  </Label>
                   <Input
                     type="number"
                     min={0.5}
                     step={0.5}
                     value={lift}
                     onChange={(e) => setLift(Number(e.target.value) || 2)}
-                    className="font-mono"
+                    className="h-7 font-mono text-xs"
                   />
                 </div>
               </div>
+            </section>
+          </div>
 
-              <div className="flex items-center justify-between pt-1">
-                <Label htmlFor="outline-switch">Outline filled shapes</Label>
-                <Switch
-                  id="outline-switch"
-                  checked={outline}
-                  onCheckedChange={setOutline}
-                />
-              </div>
-
-              <Button
-                className="w-full"
-                onClick={() => void runPipeline(rawBytes, sourceKind, pens)}
-                disabled={busy !== null}
-              >
-                <RefreshCw className={busy ? "animate-spin" : ""} />
-                {busy ?? "Compile SVG & G-code"}
-              </Button>
-            </CardContent>
-          </Card>
+          <Button
+            className="w-full shrink-0"
+            onClick={() => void runPipeline(rawBytes, sourceKind, pens)}
+            disabled={busy !== null}
+          >
+            <RefreshCw className={busy ? "animate-spin" : ""} />
+            {busy ?? "Compile Toolpath"}
+          </Button>
         </aside>
 
         {/* Center Column: Interactive Paper Drafting Bed */}
-        <main className="drafting-grid flex flex-col min-h-[540px] relative">
+        <main className="drafting-grid flex flex-col min-h-0 overflow-hidden relative">
           <Tabs
             value={viewTab}
             onValueChange={setViewTab}
-            className="flex-1 flex flex-col"
+            className="flex-1 flex flex-col min-h-0 overflow-hidden"
           >
-            <div className="h-10 border-b border-[#DCD9D0] bg-[#FBFBF9]/90 backdrop-blur-xs px-4 flex items-center justify-between">
-              <TabsList>
-                <TabsTrigger value="toolpath" className="gap-1.5">
-                  <Layers className="h-3.5 w-3.5" />
-                  G-code Toolpath
+            <div className="h-9 border-b border-[#DCD9D0] bg-[#FBFBF9]/90 backdrop-blur-xs px-3 flex items-center justify-between shrink-0">
+              <TabsList className="h-7">
+                <TabsTrigger value="toolpath" className="gap-1.5 text-[11px] py-0.5">
+                  <Layers className="h-3 w-3" />
+                  Toolpath
                 </TabsTrigger>
-                <TabsTrigger value="svg" className="gap-1.5">
-                  <ImageIcon className="h-3.5 w-3.5" />
-                  Traced SVG Layers
+                <TabsTrigger value="svg" className="gap-1.5 text-[11px] py-0.5">
+                  <ImageIcon className="h-3 w-3" />
+                  SVG
                 </TabsTrigger>
-                <TabsTrigger value="raw" className="gap-1.5">
-                  <FileCode2 className="h-3.5 w-3.5" />
-                  Raw G-code ({gcodeText ? gcodeText.split("\n").length : 0} lines)
+                <TabsTrigger value="raw" className="gap-1.5 text-[11px] py-0.5">
+                  <FileCode2 className="h-3 w-3" />
+                  G-code ({gcodeText ? gcodeText.split("\n").length : 0})
                 </TabsTrigger>
               </TabsList>
 
               {viewTab === "toolpath" && (
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1.5">
-                    <Switch
-                      id="rapids-toggle"
-                      checked={showRapids}
-                      onCheckedChange={setShowRapids}
-                    />
-                    <Label
-                      htmlFor="rapids-toggle"
-                      className="text-[11px] text-[#6B6661] cursor-pointer"
-                    >
-                      Show rapid travel (G0)
-                    </Label>
-                  </div>
+                <div className="flex items-center gap-1.5">
+                  <Switch
+                    id="rapids-toggle"
+                    checked={showRapids}
+                    onCheckedChange={setShowRapids}
+                  />
+                  <Label
+                    htmlFor="rapids-toggle"
+                    className="text-[11px] text-[#6B6661] cursor-pointer"
+                  >
+                    Show rapid travel
+                  </Label>
                 </div>
               )}
             </div>
 
             {errorMessage && (
-              <div className="mx-4 mt-3 rounded-sm border border-[#D52B1E] bg-[#D52B1E]/10 px-3 py-2 text-xs text-[#D52B1E] font-mono">
+              <div className="mx-3 mt-2 rounded-sm border border-[#D52B1E] bg-[#D52B1E]/10 px-2.5 py-1.5 text-[11px] text-[#D52B1E] font-mono shrink-0">
                 {errorMessage}
               </div>
             )}
@@ -800,17 +854,16 @@ export function App() {
             {/* Toolpath Canvas */}
             <TabsContent
               value="toolpath"
-              className="flex-1 flex flex-col items-center justify-center p-6 mt-0"
+              className="flex-1 flex flex-col items-center justify-between p-4 mt-0 min-h-0 overflow-hidden"
             >
-              <div className="relative flex items-center justify-center w-full h-full max-h-[680px]">
+              <div className="flex-1 flex items-center justify-center w-full min-h-0 overflow-hidden">
                 <svg
                   viewBox={`0 0 ${paperWidthMm} ${paperHeightMm}`}
-                  className="max-w-full max-h-[640px] w-auto h-auto bg-[#FBFBF9] shadow-sm border border-[#231F20]/40"
+                  className="max-w-full max-h-full w-auto h-full bg-[#FBFBF9] shadow-sm border border-[#231F20]/40"
                   style={{
                     aspectRatio: `${paperWidthMm} / ${paperHeightMm}`,
                   }}
                 >
-                  {/* Margin Guide Box */}
                   {margin > 0 &&
                     paperWidthMm > margin * 2 &&
                     paperHeightMm > margin * 2 && (
@@ -826,8 +879,10 @@ export function App() {
                       />
                     )}
 
-                  {/* Origin Crosshair (Bottom-Left in Paper Coordinates) */}
-                  <g stroke="#D52B1E" strokeWidth={Math.max(paperWidthMm, paperHeightMm) * 0.003}>
+                  <g
+                    stroke="#D52B1E"
+                    strokeWidth={Math.max(paperWidthMm, paperHeightMm) * 0.003}
+                  >
                     <line
                       x1={0}
                       y1={paperHeightMm}
@@ -842,12 +897,13 @@ export function App() {
                     />
                   </g>
 
-                  {/* G-code Strokes (Paper Y is up, SVG Y is down) */}
                   {visibleSegments.map((seg, idx) => {
-                    const penColor =
-                      (seg.tool !== null &&
-                        parsedGcode.tools.get(seg.tool)?.hex) ||
-                      "#231F20"
+                    const toolInfo =
+                      seg.tool !== null ? parsedGcode.tools.get(seg.tool) : undefined
+                    const penColor = toolInfo?.hex || "#231F20"
+                    const toolNib =
+                      (seg.tool !== null ? pens[seg.tool - 1]?.nibMm : undefined) ??
+                      0.8
                     return (
                       <line
                         key={idx}
@@ -859,7 +915,7 @@ export function App() {
                         strokeWidth={
                           seg.rapid
                             ? Math.max(paperWidthMm, paperHeightMm) * 0.0018
-                            : Math.max(paperWidthMm, paperHeightMm) * 0.004
+                            : toolNib
                         }
                         strokeDasharray={seg.rapid ? "2 2" : undefined}
                         strokeLinecap="round"
@@ -871,14 +927,11 @@ export function App() {
               </div>
 
               {/* Pen Tool Filter Bar */}
-              <div className="mt-3 flex flex-wrap items-center gap-1.5 bg-[#FBFBF9] border border-[#DCD9D0] px-2.5 py-1.5 rounded-sm">
-                <span className="text-[11px] text-[#6B6661] mr-1">
-                  Filter tool:
-                </span>
+              <div className="mt-2.5 flex flex-wrap items-center gap-1.5 bg-[#FBFBF9] border border-[#DCD9D0] px-2.5 py-1 rounded-sm shrink-0">
                 <button
                   type="button"
                   onClick={() => setActiveToolFilter(null)}
-                  className={`px-2 py-0.5 text-[11px] font-mono rounded-[2px] cursor-pointer ${
+                  className={`px-2 py-0.5 text-[10px] font-mono rounded-[2px] cursor-pointer ${
                     activeToolFilter === null
                       ? "bg-[#231F20] text-[#FBFBF9]"
                       : "bg-[#E8E5DC] text-[#231F20]"
@@ -895,14 +948,14 @@ export function App() {
                         activeToolFilter === tool.tool ? null : tool.tool
                       )
                     }
-                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-mono rounded-[2px] border cursor-pointer ${
+                    className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-mono rounded-[2px] border cursor-pointer ${
                       activeToolFilter === tool.tool
                         ? "border-[#231F20] bg-[#231F20] text-[#FBFBF9]"
                         : "border-[#DCD9D0] bg-[#FBFBF9] text-[#231F20]"
                     }`}
                   >
                     <span
-                      className="h-2.5 w-2.5 rounded-full border border-black/20"
+                      className="h-2 w-2 rounded-full border border-black/20"
                       style={{ backgroundColor: tool.hex }}
                     />
                     T{tool.tool} {tool.name}
@@ -914,64 +967,64 @@ export function App() {
             {/* Traced SVG View */}
             <TabsContent
               value="svg"
-              className="flex-1 flex items-center justify-center p-6 mt-0"
+              className="flex-1 flex items-center justify-center p-4 mt-0 min-h-0 overflow-hidden"
             >
               <div
-                className="max-w-full max-h-[640px] bg-[#FBFBF9] p-4 border border-[#DCD9D0] shadow-xs overflow-auto [&>svg]:max-h-[580px] [&>svg]:w-auto"
+                className="max-w-full max-h-full h-full flex items-center justify-center bg-[#FBFBF9] p-3 border border-[#DCD9D0] shadow-xs overflow-hidden [&>svg]:max-h-full [&>svg]:max-w-full [&>svg]:w-auto [&>svg]:h-full"
                 dangerouslySetInnerHTML={{ __html: tracedSvg }}
               />
             </TabsContent>
 
             {/* Raw G-code View */}
-            <TabsContent value="raw" className="flex-1 p-6 mt-0">
-              <pre className="w-full h-[620px] overflow-auto rounded-sm border border-[#DCD9D0] bg-[#FBFBF9] p-3 text-[11px] font-mono leading-relaxed text-[#231F20]">
+            <TabsContent
+              value="raw"
+              className="flex-1 p-4 mt-0 min-h-0 overflow-hidden"
+            >
+              <pre className="w-full h-full overflow-auto rounded-sm border border-[#DCD9D0] bg-[#FBFBF9] p-3 text-[11px] font-mono leading-relaxed text-[#231F20]">
                 {gcodeText || "; No G-code compiled yet"}
               </pre>
             </TabsContent>
           </Tabs>
         </main>
 
-        {/* Right Column: Telemetry, Motion Summary & Owl 6.9 Arm Execution */}
-        <aside className="border-l border-[#DCD9D0] bg-[#FBFBF9] p-4 space-y-4 overflow-y-auto">
-          {/* Motion Summary */}
-          <Card>
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
-                <CardTitle>Planned Motion Telemetry</CardTitle>
-                <Sparkles className="h-3.5 w-3.5 text-[#6B6661]" />
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2.5">
+        {/* Right Sidebar: Telemetry & Arm Placement */}
+        <aside className="border-l border-[#DCD9D0] bg-[#FBFBF9] px-4 py-3 flex flex-col justify-between min-h-0 overflow-hidden">
+          <div className="space-y-3 min-h-0">
+            {/* Motion Summary */}
+            <section className="space-y-2">
+              <Label className="text-xs font-semibold block">
+                Motion Summary
+              </Label>
               {drawSummary ? (
                 <>
-                  <div className="grid grid-cols-3 gap-2">
-                    <div className="rounded-sm bg-[#F2EFE9] p-2 border border-[#DCD9D0]">
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <div className="rounded-sm bg-[#F2EFE9]/70 px-2 py-1 border border-[#DCD9D0]">
                       <div className="text-[10px] text-[#6B6661]">Moves</div>
-                      <div className="text-sm font-mono font-medium">
+                      <div className="text-xs font-mono font-medium">
                         {drawSummary.moves.toLocaleString()}
                       </div>
                     </div>
-                    <div className="rounded-sm bg-[#F2EFE9] p-2 border border-[#DCD9D0]">
+                    <div className="rounded-sm bg-[#F2EFE9]/70 px-2 py-1 border border-[#DCD9D0]">
                       <div className="text-[10px] text-[#6B6661]">Swaps</div>
-                      <div className="text-sm font-mono font-medium">
+                      <div className="text-xs font-mono font-medium">
                         {drawSummary.pen_changes}
                       </div>
                     </div>
-                    <div className="rounded-sm bg-[#F2EFE9] p-2 border border-[#DCD9D0]">
-                      <div className="text-[10px] text-[#6B6661]">Duration</div>
-                      <div className="text-sm font-mono font-medium">
-                        {(drawSummary.estimated_seconds / 60).toFixed(1)} min
+                    <div className="rounded-sm bg-[#F2EFE9]/70 px-2 py-1 border border-[#DCD9D0]">
+                      <div className="text-[10px] text-[#6B6661]">Time</div>
+                      <div className="text-xs font-mono font-medium">
+                        {(drawSummary.estimated_seconds / 60).toFixed(1)}m
                       </div>
                     </div>
                   </div>
 
-                  <div className="rounded-sm bg-[#F2EFE9] p-2.5 border border-[#DCD9D0] space-y-1 font-mono text-[11px]">
-                    <div className="text-[10px] font-sans font-medium text-[#6B6661] mb-1">
-                      Base-Frame Pen-Tip Envelope (mm)
+                  <div className="rounded-sm bg-[#F2EFE9]/70 px-2.5 py-1.5 border border-[#DCD9D0] space-y-0.5 font-mono text-[11px]">
+                    <div className="text-[10px] font-sans text-[#6B6661]">
+                      Base-Frame Envelope
                     </div>
                     {["X", "Y", "Z"].map((axis, i) => (
                       <div key={axis} className="flex justify-between">
-                        <span className="text-[#6B6661]">{axis} axis:</span>
+                        <span className="text-[#6B6661]">{axis}</span>
                         <span>
                           {drawSummary.bounds_mm.min[i].toFixed(1)} ..{" "}
                           {drawSummary.bounds_mm.max[i].toFixed(1)} mm
@@ -981,85 +1034,161 @@ export function App() {
                   </div>
 
                   {drawSummary.worst_error_mm !== undefined && (
-                    <div className="rounded-sm border border-[#00843D] bg-[#00843D]/10 px-2.5 py-1.5 text-xs font-mono text-[#00843D]">
-                      Completed · Peak tracking error:{" "}
-                      {drawSummary.worst_error_mm.toFixed(2)} mm
+                    <div className="rounded-sm border border-[#00843D] bg-[#00843D]/10 px-2.5 py-1 text-[11px] font-mono text-[#00843D]">
+                      Done · Max error: {drawSummary.worst_error_mm.toFixed(2)} mm
                     </div>
                   )}
                 </>
               ) : (
                 <p className="text-xs text-[#6B6661]">
-                  Compile a drawing to inspect base-frame bounds and duration.
+                  Compile a drawing to inspect bounds and duration.
                 </p>
               )}
-            </CardContent>
-          </Card>
+            </section>
 
-          {/* Owl 6.9 Arm Placement & Execution */}
-          <Card>
-            <CardHeader className="pb-2">
+            <Separator />
+
+            {/* Owl 6.9 Arm Placement */}
+            <section className="space-y-2">
               <div className="flex items-center justify-between">
-                <CardTitle>Owl 6.9 Arm Placement</CardTitle>
-                <button
-                  type="button"
-                  onClick={() => void handleTeachOrigin()}
-                  disabled={busy !== null}
-                  className="text-[11px] text-[#006699] hover:underline cursor-pointer disabled:opacity-50"
-                >
-                  Teach from arm
-                </button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-1">
-                <Label>Paper Bottom-Left Origin (Base X, Y, Z mm)</Label>
-                <div className="grid grid-cols-3 gap-1.5">
-                  <Input
-                    value={originX}
-                    onChange={(e) => setOriginX(e.target.value)}
-                    placeholder="X"
-                    className="font-mono"
-                  />
-                  <Input
-                    value={originY}
-                    onChange={(e) => setOriginY(e.target.value)}
-                    placeholder="Y"
-                    className="font-mono"
-                  />
-                  <Input
-                    value={originZ}
-                    onChange={(e) => setOriginZ(e.target.value)}
-                    placeholder="Z"
-                    className="font-mono"
-                  />
+                <Label className="text-xs font-semibold">Arm Placement</Label>
+                <div className="inline-flex rounded-sm border border-[#DCD9D0] bg-[#F2EFE9] p-0.5 text-[10px] font-medium">
+                  <button
+                    type="button"
+                    onClick={() => setPlacementMode("origin")}
+                    className={`px-2 py-0.5 rounded-[2px] cursor-pointer transition-colors ${
+                      placementMode === "origin"
+                        ? "bg-[#231F20] text-[#FBFBF9]"
+                        : "text-[#6B6661] hover:text-[#231F20]"
+                    }`}
+                  >
+                    Origin
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPlacementMode("corners")}
+                    className={`px-2 py-0.5 rounded-[2px] cursor-pointer transition-colors ${
+                      placementMode === "corners"
+                        ? "bg-[#231F20] text-[#FBFBF9]"
+                        : "text-[#6B6661] hover:text-[#231F20]"
+                    }`}
+                  >
+                    4 Corners
+                  </button>
                 </div>
               </div>
+
+              {placementMode === "origin" ? (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-[11px] text-[#6B6661]">
+                      Origin X, Y, Z (base mm)
+                    </Label>
+                    <button
+                      type="button"
+                      onClick={() => void handleTeachOrigin()}
+                      disabled={busy !== null}
+                      className="inline-flex items-center gap-1 text-[11px] text-[#006699] hover:underline cursor-pointer disabled:opacity-50"
+                    >
+                      <Crosshair className="h-3 w-3" /> Teach
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <Input
+                      value={originX}
+                      onChange={(e) => setOriginX(e.target.value)}
+                      placeholder="X"
+                      className="h-7 font-mono text-xs"
+                    />
+                    <Input
+                      value={originY}
+                      onChange={(e) => setOriginY(e.target.value)}
+                      placeholder="Y"
+                      className="h-7 font-mono text-xs"
+                    />
+                    <Input
+                      value={originZ}
+                      onChange={(e) => setOriginZ(e.target.value)}
+                      placeholder="Z"
+                      className="h-7 font-mono text-xs"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <div className="grid grid-cols-[24px_1fr_1fr_1fr_24px] gap-1 items-center text-[10px] font-mono text-[#6B6661]">
+                    <span />
+                    <span>X</span>
+                    <span>Y</span>
+                    <span>Z</span>
+                    <span />
+                  </div>
+                  {CORNER_LABELS.map(({ key, code, title }) => (
+                    <div
+                      key={key}
+                      className="grid grid-cols-[24px_1fr_1fr_1fr_24px] gap-1 items-center"
+                    >
+                      <span
+                        title={title}
+                        className="text-[11px] font-mono font-semibold text-[#6B6661]"
+                      >
+                        {code}
+                      </span>
+                      {([0, 1, 2] as const).map((axisIdx) => (
+                        <Input
+                          key={axisIdx}
+                          value={corners[key][axisIdx]}
+                          onChange={(e) =>
+                            updateCornerCoord(key, axisIdx, e.target.value)
+                          }
+                          className="h-6 px-1.5 font-mono text-[11px]"
+                        />
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => void handleTeachCorner(key)}
+                        disabled={busy !== null}
+                        title={`Teach ${title} (${code}) from arm`}
+                        className="h-6 w-6 inline-flex items-center justify-center rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/60 text-[#006699] hover:border-[#006699] cursor-pointer disabled:opacity-40"
+                      >
+                        <Crosshair className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <Label>Pen Offset (mm)</Label>
+                  <Label className="text-[11px] text-[#6B6661]">
+                    Pen offset (mm)
+                  </Label>
                   <Input
                     value={penOffset}
                     onChange={(e) => setPenOffset(e.target.value)}
-                    className="font-mono"
+                    className="h-7 font-mono text-xs"
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Trailing Tilt (deg)</Label>
+                  <Label className="text-[11px] text-[#6B6661]">
+                    Tilt (deg)
+                  </Label>
                   <Input
                     type="number"
                     min={0}
                     max={30}
                     value={tilt}
                     onChange={(e) => setTilt(Number(e.target.value) || 0)}
-                    className="font-mono"
+                    className="h-7 font-mono text-xs"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <Label>Rapid (mm/min)</Label>
+                  <Label className="text-[11px] text-[#6B6661]">
+                    Rapid (mm/min)
+                  </Label>
                   <Input
                     type="number"
                     min={500}
@@ -1067,53 +1196,58 @@ export function App() {
                     step={250}
                     value={rapid}
                     onChange={(e) => setRapid(Number(e.target.value) || 3000)}
-                    className="font-mono"
+                    className="h-7 font-mono text-xs"
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label>Swap Wait (s)</Label>
+                  <Label className="text-[11px] text-[#6B6661]">
+                    Swap wait (s)
+                  </Label>
                   <Input
                     type="number"
                     min={0}
                     step={1}
                     value={swapWait}
                     onChange={(e) => setSwapWait(Number(e.target.value) || 0)}
-                    className="font-mono"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>ZMQ Host</Label>
-                  <Input
-                    value={robotHost}
-                    onChange={(e) => setRobotHost(e.target.value)}
-                    className="font-mono"
+                    className="h-7 font-mono text-xs"
                   />
                 </div>
               </div>
 
-              <div className="pt-1 space-y-2">
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => void handleExecuteOnRobot(true)}
-                  disabled={!gcodeText || busy !== null}
-                >
-                  Verify Dry-Run Envelope
-                </Button>
-                <Button
-                  variant="default"
-                  className="w-full bg-[#006699] hover:bg-[#005580] text-white"
-                  onClick={() => void handleExecuteOnRobot(false)}
-                  disabled={!gcodeText || busy !== null}
-                >
-                  <Play />
-                  {activeToolFilter !== null
-                    ? `Draw Only T${activeToolFilter} on Owl 6.9`
-                    : "Draw on Owl 6.9 Arm"}
-                </Button>
+              <div className="space-y-1">
+                <Label className="text-[11px] text-[#6B6661]">
+                  Controller ZMQ host
+                </Label>
+                <Input
+                  value={robotHost}
+                  onChange={(e) => setRobotHost(e.target.value)}
+                  className="h-7 font-mono text-xs"
+                />
               </div>
-            </CardContent>
-          </Card>
+            </section>
+          </div>
+
+          <div className="space-y-1.5 shrink-0">
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => void handleExecuteOnRobot(true)}
+              disabled={!gcodeText || busy !== null}
+            >
+              Verify Dry-Run Envelope
+            </Button>
+            <Button
+              variant="default"
+              className="w-full bg-[#006699] hover:bg-[#005580] text-white"
+              onClick={() => void handleExecuteOnRobot(false)}
+              disabled={!gcodeText || busy !== null}
+            >
+              <Play />
+              {activeToolFilter !== null
+                ? `Draw Only T${activeToolFilter}`
+                : "Draw on Owl 6.9 Arm"}
+            </Button>
+          </div>
         </aside>
       </div>
     </div>

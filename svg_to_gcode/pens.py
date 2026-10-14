@@ -1,3 +1,4 @@
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ import numpy as np
 type RGB = tuple[int, int, int]
 
 DEFAULT_PENS = "yellow=#FFF200,cyan=#00AEEF,magenta=#EC008C,black=#231F20"
+MIN_NIB_MM = 0.1
 PAPER_RGB: RGB = (255, 255, 255)
 CHANNEL_MAX = 255.0
 PEN_NAME = re.compile(r"[A-Za-z0-9_-]+")
@@ -49,6 +51,7 @@ INK_COST = 0.03
 class Pen:
     name: str
     rgb: RGB
+    nib_mm: float | None = None
 
     @property
     def hex(self) -> str:
@@ -61,11 +64,24 @@ def parse_hex(text: str) -> RGB:
     return int(text[1:3], 16), int(text[3:5], 16), int(text[5:7], 16)
 
 
+def parse_nib(text: str) -> float:
+    cleaned = text.strip().removesuffix("mm").strip()
+    try:
+        value = float(cleaned)
+    except ValueError:
+        raise ValueError(f"nib size must be a number in mm, got {text!r}") from None
+    if not (MIN_NIB_MM <= value < math.inf):
+        raise ValueError(
+            f"nib size must be at least {MIN_NIB_MM:g} mm and finite, got {text!r}"
+        )
+    return value
+
+
 def parse_pens(text: str) -> list[Pen]:
-    """Pens from NAME=#RRGGBB,... sorted light to dark, the order they draw in."""
+    """Pens from NAME=#RRGGBB[:NIB_MM],... sorted light to dark, the order they draw in."""
     pens = []
     for item in text.split(","):
-        name, separator, color = (part.strip() for part in item.partition("="))
+        name, separator, spec = (part.strip() for part in item.partition("="))
         if not separator:
             raise ValueError(
                 f"pens must be NAME=#RRGGBB separated by commas, got {item!r}"
@@ -74,7 +90,9 @@ def parse_pens(text: str) -> list[Pen]:
             raise ValueError(
                 f"pen name {name!r} must be letters, digits, '-' or '_' with no spaces"
             )
-        pens.append(Pen(name, parse_hex(color)))
+        color, nib_sep, nib_text = (part.strip() for part in spec.partition(":"))
+        nib_mm = parse_nib(nib_text) if nib_sep else None
+        pens.append(Pen(name, parse_hex(color), nib_mm))
     names = [pen.name for pen in pens]
     if duplicates := sorted({name for name in names if names.count(name) > 1}):
         raise ValueError(f"pen names must be unique, got {', '.join(duplicates)} twice")

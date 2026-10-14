@@ -125,3 +125,9 @@ def test_black_stands_in_for_the_other_pens_in_greys():
 def test_parse_pens_rejects_bad_input(text, message):
     with pytest.raises(ValueError, match=message):
         pens.parse_pens(text)
+
+
+def test_parse_pens_accepts_optional_nib_size_in_mm():
+    parsed = pens.parse_pens("fine=#231F20:0.4,marker=#D52B1E:2.0mm")
+    by_name = {pen.name: pen.nib_mm for pen in parsed}
+    assert by_name == {"fine": 0.4, "marker": 2.0}
