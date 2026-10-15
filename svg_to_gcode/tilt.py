@@ -36,23 +36,29 @@ def rotate(quat: Quat, rotation: Vec3) -> Quat:
     return quat_mul(turn, quat)
 
 
+def pointed_down(start: Quat) -> tuple[Quat, float]:
+    """start turned the least amount that points the pen straight down, and that angle (rad)."""
+    axis = tool_axis(start)
+    across = _cross(axis, DOWN)
+    sin_angle = math.hypot(*across)
+    angle = math.atan2(sin_angle, _dot(axis, DOWN))
+    if sin_angle < MIN_ROTATION:
+        return start, angle
+    return rotate(start, tuple(c * angle / sin_angle for c in across)), angle
+
+
 def vertical_from(start: Quat) -> Quat:
     """start turned the least amount that points the pen straight down.
 
     Raises ValueError when start is more than MAX_START_TILT_DEG off vertical.
     """
-    axis = tool_axis(start)
-    across = _cross(axis, DOWN)
-    sin_angle = math.hypot(*across)
-    angle = math.atan2(sin_angle, _dot(axis, DOWN))
+    upright, angle = pointed_down(start)
     if angle > math.radians(MAX_START_TILT_DEG):
         raise ValueError(
             f"the pen starts {math.degrees(angle):.0f} degrees off vertical; point "
             f"it straight down (within {MAX_START_TILT_DEG:g} degrees) to tilt it"
         )
-    if sin_angle < MIN_ROTATION:
-        return start
-    return rotate(start, tuple(c * angle / sin_angle for c in across))
+    return upright
 
 
 def tilted(vertical: Quat, heading: float, tilt: float) -> Quat:

@@ -6,6 +6,7 @@ from itertools import pairwise
 import pytest
 import zmq
 
+import motion
 from motion import rotation_error
 from svg_to_gcode import pens, robot, tilt
 
@@ -704,25 +705,29 @@ def test_mounted_pens_need_frames_the_controller_serves(monkeypatch):
         )
 
 
-def test_jog_moves_the_tip_straight_down(monkeypatch):
+def test_point_down_turns_the_frame_in_place(monkeypatch):
     clock = FakeClock()
-    monkeypatch.setattr(robot, "time", clock)
     monkeypatch.setattr(robot, "ensure_running_mode", lambda shell, mode: True)
-    monkeypatch.setattr(robot, "PenAnnouncer", SilentAnnouncer)
-    arm = FakeArm(clock, (0.3, -0.2, 0.05, *VERTICAL), stall_on_read=0, stall_s=0.0)
+    monkeypatch.setattr(motion, "time", clock)
+    monkeypatch.setattr(robot, "time", clock)
+    leaning = tilt.rotate(VERTICAL, (0.3, -0.4, 0.2))
+    arm = FakeArm(clock, (0.3, -0.2, 0.05, *leaning), stall_on_read=0, stall_s=0.0)
 
-    stopped = robot.jog(arm, -5.0)
+    turned = robot.point_down(arm)
 
-    assert stopped == pytest.approx(
-        (300.0, -200.0, 45.0), abs=robot.SETTLE_TOLERANCE_MM
-    )
-    assert arm.position[:2] == pytest.approx((0.3, -0.2), abs=1e-3)
+    assert turned == pytest.approx(math.degrees(math.hypot(0.3, 0.4)), abs=0.1)
+    assert tilt.tool_axis(arm.quat) == pytest.approx(tilt.DOWN, abs=0.01)
+    assert arm.position == pytest.approx((0.3, -0.2, 0.05), abs=0.002)
 
 
-@pytest.mark.parametrize("height_mm", [0.0, -robot.MAX_JOG_MM - 1])
-def test_jog_refuses_no_step_or_a_long_one(height_mm):
-    with pytest.raises(ValueError, match="a jog must be nonzero"):
-        robot.jog(FaultedShell(), height_mm)
+def test_point_down_refuses_a_frame_pointing_up(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(robot, "ensure_running_mode", lambda shell, mode: True)
+    monkeypatch.setattr(robot, "time", clock)
+    up = tilt.rotate(VERTICAL, (0.0, math.pi, 0.0))
+    arm = FakeArm(clock, (0.3, 0.0, 0.05, *up), stall_on_read=0, stall_s=0.0)
+    with pytest.raises(robot.DrawError, match="180 degrees off straight down"):
+        robot.point_down(arm)
 
 
 def test_swap_needs_a_terminal_or_a_wait(monkeypatch):

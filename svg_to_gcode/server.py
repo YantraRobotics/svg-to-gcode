@@ -302,13 +302,11 @@ def run_draw_request(body: bytes, params: dict[str, list[str]]) -> dict[str, obj
     return summary
 
 
-def run_jog_request(params: dict[str, list[str]]) -> dict[str, object]:
-    dz = query_float(params, "dz", 0.0)
+def run_point_down_request(params: dict[str, list[str]]) -> dict[str, object]:
     host = query_str(params, "host", DEFAULT_HOST)
     pub = query_str(params, "pub", "") or f"tcp://{host}:{PUB_PORT}"
     cmd = query_str(params, "cmd", "") or f"tcp://{host}:{CMD_PORT}"
-    x, y, z = robot.jog(Shell(pub, cmd), dz)
-    return {"tcp": [round(x, 1), round(y, 1), round(z, 1)]}
+    return {"turned_deg": round(robot.point_down(Shell(pub, cmd)), 1)}
 
 
 def run_frames_request(params: dict[str, list[str]]) -> dict[str, object]:
@@ -429,8 +427,8 @@ def dispatch(method: str, target: str, body: bytes, content_type: str = "") -> R
         if path == "/teach":
             result = run_teach_request(params)
             return json_response(HTTPStatus.OK, result)
-        if path == "/jog":
-            return json_response(HTTPStatus.OK, run_jog_request(params))
+        if path == "/point_down":
+            return json_response(HTTPStatus.OK, run_point_down_request(params))
         if path == "/conveyor":
             result = run_conveyor_request(params)
             return json_response(HTTPStatus.OK, result)

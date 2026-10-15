@@ -18,6 +18,7 @@ from motion import (
     ensure_running_mode,
     pose_servo_step,
     rotation_error,
+    servo_to_pose,
 )
 from robot_interface import (
     CONTROLLER_STATES,
@@ -62,8 +63,13 @@ FRAME_LIFT_MM = 50.0
 # PROTOCOL.md: SET_TARGET_FRAME is refused while any joint moves at 0.02 rad/s.
 STATIONARY_RAD_S = 0.01
 FRAME_SWITCH_TIMEOUT_S = 5.0
-JOG_FEED_MM_MIN = 300.0
-MAX_JOG_MM = 50.0
+# A bigger turn is more likely a frame whose +X is not along its pen.
+MAX_POINT_DOWN_DEG = 90.0
+POINT_DOWN_KP_LIN = 1.5
+POINT_DOWN_KP_ANG = 1.0
+POINT_DOWN_TOLERANCE_M = 0.001
+POINT_DOWN_TOLERANCE_RAD = 0.005
+POINT_DOWN_TIMEOUT_S = 15.0
 HOLD_TIMEOUT_S = 10.0
 GRIPPER_OPEN = 0.0
 GRIPPER_CLOSED = 1.0
@@ -704,22 +710,32 @@ def draw_with_frames(
     return worst
 
 
-def jog(shell: Shell, height_mm: float) -> Vec3:
-    """Move the controller's tip height_mm straight up in the base frame, down when
-    negative; returns where it stops (base frame mm)."""
-    if not 0 < abs(height_mm) <= MAX_JOG_MM:
-        raise ValueError(f"a jog must be nonzero and at most {MAX_JOG_MM:g} mm")
+def point_down(shell: Shell) -> float:
+    """Turn the controller's tip in place until its +X points straight down in the
+    base frame; returns the turn (degrees)."""
     check_not_in_error(shell)
     if not ensure_running_mode(shell, "world_twist"):
         raise DrawError("could not bring the controller to running in world_twist")
-    base = Placement((0.0, 0.0, 0.0), 0.0, 0.0)
-    with closing(PenAnnouncer()) as announcer:
-        plotter = Plotter(shell, base, 0.0, announcer)
-        try:
-            plotter.rise(height_mm, JOG_FEED_MM_MIN)
-        finally:
-            plotter.stop()
-        return plotter.tip()
+    tcp_pose = _telemetry(shell)["tcp_pose"]
+    target, angle = tilt.pointed_down(tuple(tcp_pose[3:7]))
+    if math.degrees(angle) > MAX_POINT_DOWN_DEG:
+        raise DrawError(
+            f"the active frame points {math.degrees(angle):.0f} degrees off straight "
+            f"down; turn it within {MAX_POINT_DOWN_DEG:g} degrees first"
+        )
+    reached = servo_to_pose(
+        shell,
+        tuple(tcp_pose[0:3]),
+        target,
+        POINT_DOWN_KP_LIN,
+        POINT_DOWN_KP_ANG,
+        POINT_DOWN_TOLERANCE_M,
+        POINT_DOWN_TOLERANCE_RAD,
+        POINT_DOWN_TIMEOUT_S,
+    )
+    if reached != 0:
+        raise DrawError("the active frame did not turn straight down")
+    return math.degrees(angle)
 
 
 def check_frames_served(shell: Shell, frames: set[str]) -> None:
