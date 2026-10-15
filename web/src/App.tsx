@@ -14,11 +14,13 @@ import {
   RefreshCw,
   RotateCw,
   Save,
+  Settings,
   Square,
   Upload,
   X,
 } from "lucide-react"
 
+import { PenFramesSettings } from "@/components/pen-frames-settings"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -39,6 +41,11 @@ import {
   parseGcode,
   parsePaperMm,
 } from "@/lib/gcode-preview"
+import {
+  loadSavedPenFrames,
+  serializePenFrames,
+  type PenFrames,
+} from "@/lib/pen-frames"
 
 interface PenEntry {
   name: string
@@ -63,6 +70,7 @@ interface DrawSummary {
   estimated_seconds: number
   bounds_mm: { min: number[]; max: number[] }
   dry_run: boolean
+  pen_frames?: PenFrames
   worst_error_mm?: number
 }
 
@@ -256,6 +264,8 @@ export function App() {
   const [rapid, setRapid] = useState<number>(1500)
   const [swapWait, setSwapWait] = useState<number>(5)
   const [robotHost, setRobotHost] = useState<string>("192.168.1.69")
+  const [penFrames, setPenFrames] = useState<PenFrames>(loadSavedPenFrames)
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
 
   const [conveyorState, setConveyorState] = useState<ConveyorState | null>(null)
   const [conveyorPort, setConveyorPort] = useState<string>("")
@@ -283,6 +293,14 @@ export function App() {
   )
 
   const parsedGcode = useMemo(() => parseGcode(gcodeText), [gcodeText])
+  const framesParam = useMemo(
+    () =>
+      serializePenFrames(
+        Array.from(parsedGcode.tools.values()).map((tool) => tool.name),
+        penFrames
+      ),
+    [parsedGcode, penFrames]
+  )
 
   const buildPlacementParam = useCallback((): Record<string, string> => {
     if (placementMode === "corners") {
@@ -514,6 +532,9 @@ export function App() {
       })
       if (activeToolFilter !== null) {
         params.set("tool", String(activeToolFilter))
+      }
+      if (framesParam) {
+        params.set("frames", framesParam)
       }
       const res = await fetch(`/draw?${params.toString()}`, {
         method: "POST",
@@ -788,6 +809,15 @@ export function App() {
             />
             <span>{serverOnline ? "API ready" : "API offline"}</span>
           </div>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings />
+            Settings
+          </Button>
 
           <Button
             variant="outline"
@@ -1597,6 +1627,20 @@ export function App() {
                 </div>
               </div>
 
+              <div className="flex items-center justify-between rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/60 px-2 py-1 text-[11px]">
+                <span className="text-[#6B6661]">Pen select</span>
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  title="Map pens to controller target frames"
+                  className="font-mono text-[#006699] hover:underline cursor-pointer"
+                >
+                  {framesParam
+                    ? `Auto · ${framesParam.split(",").length} frames`
+                    : "Manual swap"}
+                </button>
+              </div>
+
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
                   <Label className="text-[11px] text-[#6B6661]">
@@ -1621,6 +1665,8 @@ export function App() {
                     min={0}
                     step={1}
                     value={swapWait}
+                    disabled={framesParam !== ""}
+                    title={framesParam ? "Pens switch by target frame" : undefined}
                     onChange={(e) => setSwapWait(Number(e.target.value) || 0)}
                     className="h-7 font-mono text-xs"
                   />
@@ -1744,6 +1790,16 @@ export function App() {
           </div>
         </aside>
       </div>
+
+      {settingsOpen && (
+        <PenFramesSettings
+          pens={pens}
+          frames={penFrames}
+          robotHost={robotHost}
+          onSave={setPenFrames}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
     </div>
   )
 }

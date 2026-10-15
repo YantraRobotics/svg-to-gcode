@@ -570,6 +570,140 @@ def test_one_pen_run_with_the_tcp_at_the_tip_ends_raised_and_held(monkeypatch):
     assert tip == pytest.approx((30.0, 20.0, robot.PEN_CHANGE_HEIGHT_MM), abs=0.5)
 
 
+PEN_FRAMES = {"yellow": "target_frame_1", "black": "target_frame_2"}
+
+
+def test_pen_frames_parse_by_pen_name():
+    text = " yellow=target_frame_1 , black=target_frame_2,"
+    assert robot.parse_pen_frames(text) == PEN_FRAMES
+    assert robot.parse_pen_frames("") == {}
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("yellow", "NAME=FRAME"),
+        ("yellow=tool0", "must start with 'target_frame'"),
+        ("black=target_frame,black=target_frame_1", "black pen is given a frame twice"),
+    ],
+)
+def test_bad_pen_frames_are_rejected(text, message):
+    with pytest.raises(ValueError, match=message):
+        robot.parse_pen_frames(text)
+
+
+def test_pen_runs_start_above_each_pens_first_stroke():
+    runs = robot.pen_runs(parse(TWO_PENS), PEN_FRAMES)
+    assert [(run.tool, run.frame) for run in runs] == [
+        (1, "target_frame_1"),
+        (4, "target_frame_2"),
+    ]
+    assert [run.moves[0].start for run in runs] == [(2.0, 0.0, 5.0), (20.0, 20.0, 5.0)]
+    (only,) = robot.pen_runs(parse(TWO_PENS), PEN_FRAMES, tool=4)
+    assert only.pen == BLACK
+
+
+def test_pen_runs_need_a_frame_for_every_pen_drawn():
+    with pytest.raises(ValueError, match=r"black pen \(T4\) has no target frame"):
+        robot.pen_runs(parse(TWO_PENS), {"yellow": "target_frame_1"})
+    robot.pen_runs(parse(TWO_PENS), {"black": "target_frame_2"}, tool=4)
+
+
+class FramedArm(FakeArm):
+    """A FakeArm with mounted pens: switching frames moves the reported tip."""
+
+    def __init__(self, *args, offsets: dict[str, robot.Vec3], **kwargs):
+        super().__init__(*args, **kwargs)
+        self.offsets = offsets
+        self.current = next(iter(offsets))
+        self.switches: list[str] = []
+        self.switched_from: list[robot.Vec3] = []
+
+    def telemetry(self, timeout_s: float = 1.0) -> dict:
+        telemetry = super().telemetry(timeout_s)
+        moving = self.twist != robot.ZERO_TWIST
+        moving = moving and self.clock.now < self.twisted_at + robot.DEADMAN_S
+        return {**telemetry, "qdot_measured": (0.1 if moving else 0.0,) * 6}
+
+    def get_target_frame(self) -> dict:
+        return {"current": self.current, "eligible": sorted(self.offsets)}
+
+    def set_target_frame(self, name: str) -> bool:
+        if self.telemetry()["qdot_measured"][0]:
+            return False
+        self.switched_from.append(self.position)
+        old, new = self.offsets[self.current], self.offsets[name]
+        self.position = tuple(p - o + n for p, o, n in zip(self.position, old, new))
+        self.current = name
+        self.switches.append(name)
+        return True
+
+
+def test_mounted_pens_switch_frames_and_rise_after_each_pen(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(robot, "time", clock)
+    monkeypatch.setattr(robot, "ensure_running_mode", lambda shell, mode: True)
+    announcer = SilentAnnouncer()
+    monkeypatch.setattr(robot, "PenAnnouncer", lambda: announcer)
+    placement = robot.Placement((300.0, 0.0, 0.0), 0.0, 0.0)
+    offsets = {
+        "target_frame": (0.0, 0.0, 0.0),
+        "target_frame_1": (0.03, 0.0, 0.0),
+        "target_frame_2": (0.0, 0.03, -0.01),
+    }
+    start = placement.to_base((0.0, 0.0, 30.0))
+    arm = FramedArm(
+        clock, (*start, *VERTICAL), stall_on_read=0, stall_s=0.0, offsets=offsets
+    )
+
+    worst = robot.draw(
+        arm,
+        TOOL_TABLE + TWO_PENS,
+        placement,
+        0.0,
+        RAPID_MM_MIN,
+        0.0,
+        None,
+        pen_frames=PEN_FRAMES,
+    )
+
+    assert worst < 1.0
+    assert arm.switches == ["target_frame_1", "target_frame_2"]
+    assert announcer.pens == [pens.Pen("yellow", (0xFF, 0xF2, 0x00)), BLACK]
+    # Settling at the last stroke and again at the top each leave up to the tolerance.
+    within = 2 * robot.SETTLE_TOLERANCE_MM
+    yellow_done = placement.to_paper(arm.switched_from[1])
+    assert yellow_done == pytest.approx(
+        (10.0, 0.0, 5.0 + robot.FRAME_LIFT_MM), abs=within
+    )
+    end = placement.to_paper(arm.position)
+    assert end == pytest.approx((30.0, 20.0, 5.0 + robot.FRAME_LIFT_MM), abs=within)
+
+
+def test_mounted_pens_need_frames_the_controller_serves(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(robot, "time", clock)
+    arm = FramedArm(
+        clock,
+        (0.3, 0.0, 0.03, *VERTICAL),
+        stall_on_read=0,
+        stall_s=0.0,
+        offsets={"target_frame": (0.0, 0.0, 0.0), "target_frame_1": (0.0, 0.0, 0.0)},
+    )
+    arm.telemetry = lambda timeout_s=1.0: {"controller_state": robot.RUNNING}
+    with pytest.raises(robot.DrawError, match="no target frame target_frame_2"):
+        robot.draw(
+            arm,
+            TOOL_TABLE + TWO_PENS,
+            robot.Placement(ORIGIN, 0.0, 0.0),
+            0.0,
+            RAPID_MM_MIN,
+            0.0,
+            None,
+            pen_frames=PEN_FRAMES,
+        )
+
+
 def test_swap_needs_a_terminal_or_a_wait(monkeypatch):
     def no_terminal(prompt: str) -> str:
         raise EOFError

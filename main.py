@@ -109,6 +109,13 @@ def pen_set(text: str) -> list[pens.Pen]:
         raise argparse.ArgumentTypeError(str(exc)) from None
 
 
+def pen_frame_map(text: str) -> dict[str, str]:
+    try:
+        return robot.parse_pen_frames(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def run_image(args: argparse.Namespace) -> int:
     if args.tone:
         svg = image.image_to_line_screen(args.image, args.pens, args.resolution)
@@ -189,6 +196,10 @@ def run_draw(args: argparse.Namespace) -> int:
     if args.tool is not None:
         pen = robot.tool_table(text).get(args.tool)
         print(f"drawing only T{args.tool}" + (f" {pen.name} {pen.hex}" if pen else ""))
+    if args.pen_frames:
+        steps = robot.parse_gcode(text, (0.0, 0.0, 0.0), args.rapid)
+        for run in robot.pen_runs(steps, args.pen_frames, args.tool):
+            print(f"T{run.tool} {run.pen.name} draws at {run.frame}")
     if args.dry_run:
         # The arm's start pose is unknown offline, so begin at the first XY travel.
         steps = robot.parse_gcode(text, (0.0, 0.0, 0.0), args.rapid)
@@ -217,6 +228,7 @@ def run_draw(args: argparse.Namespace) -> int:
         args.tilt,
         args.swap_wait,
         args.tool,
+        args.pen_frames,
     )
     print(f"done; largest pen-tip error while drawing {worst:.2f} mm")
     return 0
@@ -517,6 +529,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="draw only this tool's strokes, with its pen already in the gripper: no "
         f"pen change, and the arm ends held {robot.PEN_CHANGE_HEIGHT_MM:g} mm above "
         "the paper for the next swap",
+    )
+    draw.add_argument(
+        "--pen-frames",
+        type=pen_frame_map,
+        metavar="NAME=FRAME,...",
+        help="the controller target frame each mounted pen's tip is, e.g. "
+        "red=target_frame_1,green=target_frame_2; pen changes then switch frames "
+        f"instead of swapping, and each pen ends {robot.FRAME_LIFT_MM:g} mm higher",
     )
     draw.add_argument(
         "--dry-run",

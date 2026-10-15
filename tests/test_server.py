@@ -89,6 +89,29 @@ def test_health_and_conversion_endpoints(base_url):
         assert summary["pen_changes"] == 1
 
 
+def test_dry_run_checks_every_drawn_pen_has_a_frame(base_url):
+    gcode_text = "G21\nG90\n; T1 black #231F20\nG0 Z5\nT1 M6\nG0 X1\nG1 Z0 F600\n"
+    gcode_text += "G1 X9 F1000\nG0 Z5\nM2\n"
+    url = f"{base_url}/draw?origin=-125,-460,30.6&dry_run=true&tilt=0"
+
+    framed = Request(
+        f"{url}&frames=black=target_frame_1", data=gcode_text.encode(), method="POST"
+    )
+    with urlopen(framed) as response:
+        assert json.loads(response.read())["pen_frames"] == {"black": "target_frame_1"}
+
+    unmapped = Request(
+        f"{url}&frames=red=target_frame_1", data=gcode_text.encode(), method="POST"
+    )
+    with pytest.raises(HTTPError) as exc_info:
+        urlopen(unmapped)
+    assert exc_info.value.code == 400
+    assert (
+        "black pen (T1) has no target frame"
+        in json.loads(exc_info.value.read())["error"]
+    )
+
+
 def test_invalid_requests_return_400(base_url):
     bad_req = Request(f"{base_url}/gcode", data=b"", method="POST")
     with pytest.raises(HTTPError) as exc_info:

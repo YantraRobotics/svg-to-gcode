@@ -19,9 +19,15 @@ from motion import (
     pose_servo_step,
     rotation_error,
 )
-from robot_interface import CONTROLLER_STATES, Shell, encode_get_model, parse_model
+from robot_interface import (
+    CONTROLLER_STATES,
+    TARGET_FRAME_PREFIX,
+    Shell,
+    encode_get_model,
+    parse_model,
+)
 from svg_to_gcode import tilt
-from svg_to_gcode.pens import Pen, parse_hex
+from svg_to_gcode.pens import PEN_NAME, Pen, parse_hex
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +58,10 @@ MAX_TRACKING_ERROR_MM = 25.0
 ABORT_LIFT_MM = 10.0
 ABORT_LIFT_FEED_MM_MIN = 600.0
 PEN_CHANGE_HEIGHT_MM = 80.0
+FRAME_LIFT_MM = 50.0
+# PROTOCOL.md: SET_TARGET_FRAME is refused while any joint moves at 0.02 rad/s.
+STATIONARY_RAD_S = 0.01
+FRAME_SWITCH_TIMEOUT_S = 5.0
 HOLD_TIMEOUT_S = 10.0
 GRIPPER_OPEN = 0.0
 GRIPPER_CLOSED = 1.0
@@ -374,17 +384,87 @@ def one_pen(steps: list[Step], tool: int, start: Vec3, rapid_feed: float) -> lis
             active = step.tool
         elif active == tool:
             moves.append(step)
-    first = next((index for index, move in enumerate(moves) if not move.rapid), None)
-    if first is None:
+    moves = from_first_stroke(moves)
+    if not moves:
         raise ValueError(f"T{tool} draws nothing in this G-code")
-    moves = moves[first:]
-    above_first, last = moves[0].start, moves[-1].end
-    height = max(start[2], above_first[2])
-    path = [start, (*start[:2], height), (*above_first[:2], height), above_first]
+    last = moves[-1].end
     raised = (*last[:2], max(last[2], PEN_CHANGE_HEIGHT_MM))
-    approach = [Move(a, b, rapid_feed, rapid=True) for a, b in pairwise(path) if a != b]
     departure = [Move(last, raised, rapid_feed, rapid=True)] if raised != last else []
-    return [*approach, *moves, *departure]
+    return [*approach(start, moves[0].start, rapid_feed), *moves, *departure]
+
+
+def from_first_stroke(moves: list[Move]) -> list[Move]:
+    """The moves from the first one that is not a rapid; none when all are."""
+    first = next((index for index, move in enumerate(moves) if not move.rapid), None)
+    return [] if first is None else moves[first:]
+
+
+def approach(start: Vec3, target: Vec3, rapid_feed: float) -> list[Move]:
+    """Rapids from start to target that stay at least as high as either until above it."""
+    height = max(start[2], target[2])
+    path = [start, (*start[:2], height), (*target[:2], height), target]
+    return [Move(a, b, rapid_feed, rapid=True) for a, b in pairwise(path) if a != b]
+
+
+def parse_pen_frames(text: str) -> dict[str, str]:
+    """Target frames by pen name from NAME=FRAME,...; empty text maps none."""
+    frames = {}
+    for item in filter(None, (part.strip() for part in text.split(","))):
+        name, separator, frame = (part.strip() for part in item.partition("="))
+        if not separator or not PEN_NAME.fullmatch(name):
+            raise ValueError(
+                f"pen frames must be NAME=FRAME separated by commas, got {item!r}"
+            )
+        if not frame.startswith(TARGET_FRAME_PREFIX):
+            raise ValueError(
+                f"the {name} pen's frame {frame!r} must start with {TARGET_FRAME_PREFIX!r}"
+            )
+        if name in frames:
+            raise ValueError(f"the {name} pen is given a frame twice")
+        frames[name] = frame
+    return frames
+
+
+@dataclass(frozen=True)
+class PenRun:
+    """One pen's strokes, from above the first, drawn at its target frame."""
+
+    tool: int
+    pen: Pen
+    frame: str
+    moves: list[Move]
+
+
+def pen_runs(
+    steps: list[Step], frames: dict[str, str], tool: int | None = None
+) -> list[PenRun]:
+    """The strokes after each pen change that draws, only tool's when one is given."""
+    runs: list[PenRun] = []
+    change = None
+    moves: list[Move] = []
+    for step in [*steps, None]:
+        if isinstance(step, Move):
+            if change is None and not step.rapid:
+                raise ValueError("the G-code draws before its first pen change (M6)")
+            moves.append(step)
+            continue
+        strokes = from_first_stroke(moves)
+        if change is not None and strokes and tool in (None, change.tool):
+            if change.pen.name not in frames:
+                raise ValueError(
+                    f"the {change.pen.name} pen (T{change.tool}) has no target frame; "
+                    "map every pen the drawing uses to one"
+                )
+            frame = frames[change.pen.name]
+            runs.append(PenRun(change.tool, change.pen, frame, strokes))
+        change, moves = step, []
+    if not runs:
+        raise ValueError(
+            f"T{tool} draws nothing in this G-code"
+            if tool is not None
+            else "the G-code draws nothing after a pen change (M6)"
+        )
+    return runs
 
 
 def check_on_paper(text: str, size: tuple[float, float]) -> None:
@@ -532,14 +612,20 @@ def draw(
     tilt_deg: float,
     swap_wait: float | None,
     tool: int | None = None,
+    pen_frames: dict[str, str] | None = None,
 ) -> float:
     """Draw the G-code; returns the largest pen-tip error while drawing (mm).
 
     The pen leans tilt_deg back from its direction of travel; 0 holds the start
-    orientation. Pen changes wait swap_wait seconds, or for Enter when it is None.
-    With tool, only that tool's strokes are drawn (one_pen) and the arm is held
-    afterwards for the operator to swap pens.
+    orientation. With pen_frames each pen is selected by its target frame
+    (draw_with_frames); otherwise pen changes wait swap_wait seconds, or for
+    Enter when it is None, and with tool only that tool's strokes are drawn
+    (one_pen) and the arm is held afterwards for the operator to swap pens.
     """
+    if pen_frames:
+        return draw_with_frames(
+            shell, text, placement, pen_offset, rapid_feed, tilt_deg, pen_frames, tool
+        )
     steps_to_draw(text, (0.0, 0.0, 0.0), rapid_feed, tool)
     check_not_in_error(shell)
     # With no offset the controller's TCP is the pen tip, whatever link it is on.
@@ -574,6 +660,82 @@ def draw(
         finally:
             plotter.stop()
     return worst
+
+
+def draw_with_frames(
+    shell: Shell,
+    text: str,
+    placement: Placement,
+    pen_offset: float,
+    rapid_feed: float,
+    tilt_deg: float,
+    pen_frames: dict[str, str],
+    tool: int | None = None,
+) -> float:
+    """Draw each pen at its target frame; returns the largest pen-tip error (mm).
+
+    Pens stay mounted: at each pen change the controller's tip switches to the
+    pen's frame, the new tip approaches the strokes from wherever it is, and
+    after the pen's last stroke it rises FRAME_LIFT_MM straight up in the base
+    frame. pen_offset reaches beyond every frame along its +X.
+    """
+    runs = pen_runs(parse_gcode(text, (0.0, 0.0, 0.0), rapid_feed), pen_frames, tool)
+    check_not_in_error(shell)
+    check_frames_served(shell, {run.frame for run in runs})
+    if not ensure_running_mode(shell, "world_twist"):
+        raise DrawError("could not bring the controller to running in world_twist")
+    worst = 0.0
+    with closing(PenAnnouncer()) as announcer:
+        plotter = Plotter(shell, placement, pen_offset, announcer)
+        try:
+            for run in runs:
+                plotter.stop()
+                select_frame(shell, run.frame)
+                announcer.announce(run.pen)
+                worst = max(worst, plotter.draw_run(run, rapid_feed, tilt_deg))
+                plotter.rise(FRAME_LIFT_MM, rapid_feed)
+        except DrawError, KeyboardInterrupt:
+            plotter.lift()
+            raise
+        finally:
+            plotter.stop()
+    return worst
+
+
+def check_frames_served(shell: Shell, frames: set[str]) -> None:
+    """Refuse frames the controller cannot switch its tip to."""
+    tips = shell.get_target_frame()
+    if tips is None:
+        raise DrawError(
+            "the controller did not list its target frames; is it serving, and "
+            "does it support GET_TARGET_FRAME?"
+        )
+    if missing := sorted(frames - set(tips["eligible"])):
+        raise DrawError(
+            f"the controller has no target frame {', '.join(missing)}; it offers "
+            f"{', '.join(tips['eligible']) or 'none'}"
+        )
+
+
+def select_frame(shell: Shell, frame: str) -> None:
+    """Switch the controller's tip to frame once the arm stands still."""
+    deadline = time.monotonic() + FRAME_SWITCH_TIMEOUT_S
+    while not (_stationary(shell) and shell.set_target_frame(frame)):
+        if time.monotonic() > deadline:
+            raise DrawError(
+                f"could not switch to {frame} within {FRAME_SWITCH_TIMEOUT_S:g} s"
+            )
+        time.sleep(TELEMETRY_POLL_S)
+    tips = shell.get_target_frame()
+    if tips is None or tips["current"] != frame:
+        raise DrawError(f"the controller did not switch its tip to {frame}")
+
+
+def _stationary(shell: Shell) -> bool:
+    telemetry = shell.telemetry(TELEMETRY_POLL_S)
+    return telemetry is not None and all(
+        abs(speed) < STATIONARY_RAD_S for speed in telemetry["qdot_measured"]
+    )
 
 
 def orientations(
@@ -750,15 +912,34 @@ class Plotter:
         telemetry = _telemetry(self.shell)
         return self.placement.to_paper(pen_tip(telemetry["tcp_pose"], self.pen_offset))
 
+    def draw_run(self, run: PenRun, rapid_feed: float, tilt_deg: float) -> float:
+        """Approach the run's strokes from the tip as it is and draw them.
+
+        Returns the largest pen-tip error while drawing (mm).
+        """
+        start_quat = tuple(_telemetry(self.shell)["tcp_pose"][3:7])
+        upright = tilt.vertical_from(start_quat) if tilt_deg else start_quat
+        moves = [*approach(self.tip(), run.moves[0].start, rapid_feed), *run.moves]
+        segments, _ = plan_motion(moves, tilt_deg)
+        goals = orientations(segments, self.placement, upright, math.radians(tilt_deg))
+        worst = 0.0
+        for segment, goal in zip(segments, goals):
+            error = self.follow(segment, goal)
+            if segment[0].is_drawing:
+                worst = max(worst, error)
+        return worst
+
+    def rise(self, height_mm: float, feed: float) -> None:
+        """Raise the pen tip height_mm straight up in the base frame, keeping its orientation."""
+        tcp_pose = _telemetry(self.shell)["tcp_pose"]
+        tip = self.placement.to_paper(pen_tip(tcp_pose, self.pen_offset))
+        above = (*tip[:2], tip[2] + height_mm)
+        self.follow([Move(tip, above, feed, rapid=True)], _fixed(tuple(tcp_pose[3:7])))
+
     def lift(self) -> None:
         """Raise the pen off the paper after an abort, keeping its orientation."""
         try:
-            telemetry = _telemetry(self.shell)
-            tcp_pose = telemetry["tcp_pose"]
-            tip = self.placement.to_paper(pen_tip(tcp_pose, self.pen_offset))
-            above = (*tip[:2], tip[2] + ABORT_LIFT_MM)
-            lift = Move(tip, above, ABORT_LIFT_FEED_MM_MIN, rapid=True)
-            self.follow([lift], _fixed(tuple(tcp_pose[3:7])))
+            self.rise(ABORT_LIFT_MM, ABORT_LIFT_FEED_MM_MIN)
         except (DrawError, zmq.ZMQError) as exc:
             log.warning("could not lift the pen: %s", exc)
 

@@ -254,8 +254,11 @@ def run_draw_request(body: bytes, params: dict[str, list[str]]) -> dict[str, obj
     if tool is not None and tool <= 0:
         raise ValueError(f"tool must be positive, got {tool}")
     dry_run = query_bool(params, "dry_run", False)
+    pen_frames = robot.parse_pen_frames(query_str(params, "frames", ""))
 
     steps = robot.parse_gcode(text, (0.0, 0.0, 0.0), rapid)
+    if pen_frames:
+        robot.pen_runs(steps, pen_frames, tool)
     moves = [step for step in steps if isinstance(step, robot.Move)]
     start = next((m.end for m in moves if m.start[:2] != m.end[:2]), moves[0].start)
     steps = robot.steps_to_draw(text, start, rapid, tool)
@@ -270,6 +273,7 @@ def run_draw_request(body: bytes, params: dict[str, list[str]]) -> dict[str, obj
         "estimated_seconds": round(seconds, 2),
         "bounds_mm": {"min": list(low), "max": list(high)},
         "dry_run": dry_run,
+        "pen_frames": pen_frames,
     }
     if dry_run:
         return summary
@@ -284,10 +288,31 @@ def run_draw_request(body: bytes, params: dict[str, list[str]]) -> dict[str, obj
     pub = query_str(params, "pub", "") or f"tcp://{host}:{PUB_PORT}"
     cmd = query_str(params, "cmd", "") or f"tcp://{host}:{CMD_PORT}"
     worst = robot.draw(
-        Shell(pub, cmd), text, placement, pen_offset, rapid, tilt_deg, swap_wait, tool
+        Shell(pub, cmd),
+        text,
+        placement,
+        pen_offset,
+        rapid,
+        tilt_deg,
+        swap_wait,
+        tool,
+        pen_frames,
     )
     summary["worst_error_mm"] = round(worst, 2)
     return summary
+
+
+def run_frames_request(params: dict[str, list[str]]) -> dict[str, object]:
+    host = query_str(params, "host", DEFAULT_HOST)
+    pub = query_str(params, "pub", "") or f"tcp://{host}:{PUB_PORT}"
+    cmd = query_str(params, "cmd", "") or f"tcp://{host}:{CMD_PORT}"
+    tips = Shell(pub, cmd).get_target_frame()
+    if tips is None:
+        raise RuntimeError(
+            f"no target frame list from {cmd}; is the controller serving, and does "
+            "it support GET_TARGET_FRAME?"
+        )
+    return tips
 
 
 def run_teach_request(params: dict[str, list[str]]) -> dict[str, object]:
@@ -359,6 +384,11 @@ def dispatch(method: str, target: str, body: bytes, content_type: str = "") -> R
                 return json_response(HTTPStatus.OK, run_conveyor_request(params))
             except (ValueError, RuntimeError, TimeoutError, OSError) as exc:
                 return json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        if path == "/frames":
+            try:
+                return json_response(HTTPStatus.OK, run_frames_request(params))
+            except RuntimeError as exc:
+                return json_response(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
         served = static_response(path)
         if served is not None:
             return served
