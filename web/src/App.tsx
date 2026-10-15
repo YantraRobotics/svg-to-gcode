@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
+  ArrowDown,
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
   ArrowUpDown,
   Check,
   Crosshair,
@@ -264,6 +266,8 @@ export function App() {
   const [rapid, setRapid] = useState<number>(1500)
   const [swapWait, setSwapWait] = useState<number>(5)
   const [robotHost, setRobotHost] = useState<string>("192.168.1.69")
+  const [jogStep, setJogStep] = useState<number>(2)
+  const [jogTcp, setJogTcp] = useState<number[] | null>(null)
   const [penFrames, setPenFrames] = useState<PenFrames>(loadSavedPenFrames)
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
 
@@ -575,6 +579,27 @@ export function App() {
       setOriginX(x)
       setOriginY(y)
       setOriginZ(z)
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleJog = async (direction: -1 | 1) => {
+    setBusy(direction < 0 ? "Jogging down..." : "Jogging up...")
+    setErrorMessage(null)
+    try {
+      const params = new URLSearchParams({
+        dz: String(direction * jogStep),
+        host: robotHost,
+      })
+      const res = await fetch(`/jog?${params.toString()}`, { method: "POST" })
+      const payload = await res.json()
+      if (!res.ok) {
+        throw new Error(payload.error || "Jog failed")
+      }
+      setJogTcp(payload.tcp as number[])
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1600,6 +1625,48 @@ export function App() {
                   ))}
                 </div>
               )}
+
+              <div className="grid grid-cols-[1fr_52px_auto_auto] gap-1 items-center">
+                <span
+                  className="text-[11px] text-[#6B6661] truncate"
+                  title="Move the active target frame straight along base Z"
+                >
+                  {jogTcp
+                    ? `Z jog · ${jogTcp.map((v) => v.toFixed(1)).join(", ")}`
+                    : "Z jog (mm)"}
+                </span>
+                <Input
+                  type="number"
+                  min={0.1}
+                  max={50}
+                  step={0.5}
+                  value={jogStep}
+                  onChange={(e) =>
+                    setJogStep(
+                      Math.min(50, Math.max(0.1, Number(e.target.value) || 2))
+                    )
+                  }
+                  className="h-6 px-1.5 font-mono text-[11px]"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleJog(-1)}
+                  disabled={busy !== null}
+                  title="Move the active frame straight down"
+                  className="h-6 inline-flex items-center gap-0.5 rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/60 px-1.5 text-[11px] text-[#006699] hover:border-[#006699] cursor-pointer disabled:opacity-40"
+                >
+                  <ArrowDown className="h-3 w-3" /> Down
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleJog(1)}
+                  disabled={busy !== null}
+                  title="Move the active frame straight up"
+                  className="h-6 inline-flex items-center gap-0.5 rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/60 px-1.5 text-[11px] text-[#006699] hover:border-[#006699] cursor-pointer disabled:opacity-40"
+                >
+                  <ArrowUp className="h-3 w-3" /> Up
+                </button>
+              </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">

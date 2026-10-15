@@ -62,6 +62,8 @@ FRAME_LIFT_MM = 50.0
 # PROTOCOL.md: SET_TARGET_FRAME is refused while any joint moves at 0.02 rad/s.
 STATIONARY_RAD_S = 0.01
 FRAME_SWITCH_TIMEOUT_S = 5.0
+JOG_FEED_MM_MIN = 300.0
+MAX_JOG_MM = 50.0
 HOLD_TIMEOUT_S = 10.0
 GRIPPER_OPEN = 0.0
 GRIPPER_CLOSED = 1.0
@@ -700,6 +702,24 @@ def draw_with_frames(
         finally:
             plotter.stop()
     return worst
+
+
+def jog(shell: Shell, height_mm: float) -> Vec3:
+    """Move the controller's tip height_mm straight up in the base frame, down when
+    negative; returns where it stops (base frame mm)."""
+    if not 0 < abs(height_mm) <= MAX_JOG_MM:
+        raise ValueError(f"a jog must be nonzero and at most {MAX_JOG_MM:g} mm")
+    check_not_in_error(shell)
+    if not ensure_running_mode(shell, "world_twist"):
+        raise DrawError("could not bring the controller to running in world_twist")
+    base = Placement((0.0, 0.0, 0.0), 0.0, 0.0)
+    with closing(PenAnnouncer()) as announcer:
+        plotter = Plotter(shell, base, 0.0, announcer)
+        try:
+            plotter.rise(height_mm, JOG_FEED_MM_MIN)
+        finally:
+            plotter.stop()
+        return plotter.tip()
 
 
 def check_frames_served(shell: Shell, frames: set[str]) -> None:

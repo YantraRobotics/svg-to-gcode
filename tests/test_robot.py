@@ -704,6 +704,27 @@ def test_mounted_pens_need_frames_the_controller_serves(monkeypatch):
         )
 
 
+def test_jog_moves_the_tip_straight_down(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(robot, "time", clock)
+    monkeypatch.setattr(robot, "ensure_running_mode", lambda shell, mode: True)
+    monkeypatch.setattr(robot, "PenAnnouncer", SilentAnnouncer)
+    arm = FakeArm(clock, (0.3, -0.2, 0.05, *VERTICAL), stall_on_read=0, stall_s=0.0)
+
+    stopped = robot.jog(arm, -5.0)
+
+    assert stopped == pytest.approx(
+        (300.0, -200.0, 45.0), abs=robot.SETTLE_TOLERANCE_MM
+    )
+    assert arm.position[:2] == pytest.approx((0.3, -0.2), abs=1e-3)
+
+
+@pytest.mark.parametrize("height_mm", [0.0, -robot.MAX_JOG_MM - 1])
+def test_jog_refuses_no_step_or_a_long_one(height_mm):
+    with pytest.raises(ValueError, match="a jog must be nonzero"):
+        robot.jog(FaultedShell(), height_mm)
+
+
 def test_swap_needs_a_terminal_or_a_wait(monkeypatch):
     def no_terminal(prompt: str) -> str:
         raise EOFError

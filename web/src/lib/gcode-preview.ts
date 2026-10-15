@@ -101,6 +101,7 @@ export function parseGcode(text: string): ParsedGcode {
 export const SAMPLE_ROSE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
   <g fill="none" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="120" cy="120" r="88" stroke="#231F20" stroke-width="2"/>
+    <circle cx="120" cy="120" r="75" stroke="#00843D" stroke-width="1.6"/>
     <circle cx="120" cy="120" r="62" stroke="#00AEEF" stroke-width="1.6"/>
     <path d="M 120 24 L 138 98 L 216 120 L 138 142 L 120 216 L 102 142 L 24 120 L 102 98 Z" fill="#FFF200" stroke="#231F20" stroke-width="1.8"/>
     <path d="M 56 56 L 110 96 L 184 56 L 144 110 L 184 184 L 110 144 L 56 184 L 96 110 Z" stroke="#EC008C" stroke-width="1.6"/>
