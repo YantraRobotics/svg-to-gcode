@@ -43,9 +43,11 @@ import {
   parsePaperMm,
 } from "@/lib/gcode-preview"
 import {
+  listTargetFrames,
   loadSavedPenFrames,
   serializePenFrames,
   type PenFrames,
+  type TargetFrames,
 } from "@/lib/pen-frames"
 
 interface PenEntry {
@@ -266,6 +268,8 @@ export function App() {
   const [swapWait, setSwapWait] = useState<number>(5)
   const [robotHost, setRobotHost] = useState<string>("192.168.1.69")
   const [pointedDown, setPointedDown] = useState<number | null>(null)
+  const [targetFrames, setTargetFrames] = useState<TargetFrames | null>(null)
+  const [chosenFrame, setChosenFrame] = useState<string>("")
   const [penFrames, setPenFrames] = useState<PenFrames>(loadSavedPenFrames)
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
 
@@ -597,6 +601,43 @@ export function App() {
         throw new Error(payload.error || "Point down failed")
       }
       setPointedDown(payload.turned_deg as number)
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const refreshTargetFrames = async () => {
+    try {
+      const listed = await listTargetFrames(robotHost)
+      setTargetFrames(listed)
+      setChosenFrame((prev) => prev || listed.current)
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleSetFrame = async () => {
+    if (!chosenFrame) return
+    setBusy(`Switching to ${chosenFrame}...`)
+    setErrorMessage(null)
+    try {
+      const params = new URLSearchParams({
+        host: robotHost,
+        frame: chosenFrame,
+      })
+      const res = await fetch(`/frame?${params.toString()}`, {
+        method: "POST",
+      })
+      const payload = await res.json()
+      if (!res.ok) {
+        throw new Error(payload.error || "Frame switch failed")
+      }
+      setTargetFrames((prev) =>
+        prev ? { ...prev, current: payload.current as string } : prev
+      )
+      setPointedDown(null)
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1637,6 +1678,49 @@ export function App() {
                   className="h-6 inline-flex items-center gap-0.5 rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/60 px-1.5 text-[11px] text-[#006699] hover:border-[#006699] cursor-pointer disabled:opacity-40 shrink-0"
                 >
                   <ArrowDown className="h-3 w-3" /> Point down
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-2">
+                <Select
+                  value={chosenFrame}
+                  onValueChange={setChosenFrame}
+                  onOpenChange={(open) => {
+                    if (open) void refreshTargetFrames()
+                  }}
+                >
+                  <SelectTrigger className="h-6 min-w-0 flex-1 font-mono text-[11px]">
+                    <SelectValue placeholder="Choose a target frame" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(
+                      targetFrames?.eligible ??
+                      (chosenFrame ? [chosenFrame] : [])
+                    ).map((frame) => (
+                      <SelectItem
+                        key={frame}
+                        value={frame}
+                        className="font-mono"
+                      >
+                        {frame === targetFrames?.current
+                          ? `${frame} (active)`
+                          : frame}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <button
+                  type="button"
+                  onClick={() => void handleSetFrame()}
+                  disabled={
+                    busy !== null ||
+                    !chosenFrame ||
+                    chosenFrame === targetFrames?.current
+                  }
+                  title="Make the chosen target frame the controller's active tip (the arm must be still)"
+                  className="h-6 inline-flex items-center gap-0.5 rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/60 px-1.5 text-[11px] text-[#006699] hover:border-[#006699] cursor-pointer disabled:opacity-40 shrink-0"
+                >
+                  <Crosshair className="h-3 w-3" /> Set frame
                 </button>
               </div>
 

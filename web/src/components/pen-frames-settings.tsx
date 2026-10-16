@@ -11,25 +11,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { PEN_FRAMES_STORAGE_KEY, type PenFrames } from "@/lib/pen-frames"
-
-interface TargetFrames {
-  current: string
-  eligible: string[]
-}
+import {
+  listTargetFrames,
+  PEN_FRAMES_STORAGE_KEY,
+  type PenFrames,
+  type TargetFrames,
+} from "@/lib/pen-frames"
 
 // Radix Select reserves the empty string, so "no frame" needs a value of its own.
 const MANUAL_SWAP = "__manual__"
-
-async function listTargetFrames(host: string): Promise<TargetFrames> {
-  const params = new URLSearchParams({ host })
-  const res = await fetch(`/frames?${params.toString()}`)
-  const payload = await res.json()
-  if (!res.ok) {
-    throw new Error(payload.error || "Could not list target frames")
-  }
-  return payload as TargetFrames
-}
 
 interface PenFramesSettingsProps {
   pens: { name: string; hex: string }[]

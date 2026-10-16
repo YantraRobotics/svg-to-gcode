@@ -705,6 +705,36 @@ def test_mounted_pens_need_frames_the_controller_serves(monkeypatch):
         )
 
 
+def test_switch_frame_changes_the_active_tip(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(robot, "time", clock)
+    offsets = {"target_frame": (0.0, 0.0, 0.0), "target_frame_1": (0.0, 0.0, -0.02)}
+    arm = FramedArm(
+        clock, (0.3, 0.0, 0.1, *VERTICAL), stall_on_read=0, stall_s=0.0, offsets=offsets
+    )
+
+    robot.switch_frame(arm, "target_frame_1")
+
+    assert arm.current == "target_frame_1"
+    assert arm.position == pytest.approx((0.3, 0.0, 0.08))
+
+
+def test_switch_frame_refuses_a_frame_the_controller_lacks(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(robot, "time", clock)
+    arm = FramedArm(
+        clock,
+        (0.3, 0.0, 0.1, *VERTICAL),
+        stall_on_read=0,
+        stall_s=0.0,
+        offsets={"target_frame": (0.0, 0.0, 0.0)},
+    )
+
+    with pytest.raises(robot.DrawError, match="no target frame target_frame_9"):
+        robot.switch_frame(arm, "target_frame_9")
+    assert arm.switches == []
+
+
 def test_point_down_turns_the_frame_in_place(monkeypatch):
     clock = FakeClock()
     monkeypatch.setattr(robot, "ensure_running_mode", lambda shell, mode: True)

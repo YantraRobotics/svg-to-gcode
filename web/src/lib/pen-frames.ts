@@ -2,6 +2,21 @@ export type PenFrames = Record<string, string>
 
 export const PEN_FRAMES_STORAGE_KEY = "svg-to-gcode.pen-frames"
 
+export interface TargetFrames {
+  current: string
+  eligible: string[]
+}
+
+export async function listTargetFrames(host: string): Promise<TargetFrames> {
+  const params = new URLSearchParams({ host })
+  const res = await fetch(`/frames?${params.toString()}`)
+  const payload = await res.json()
+  if (!res.ok) {
+    throw new Error(payload.error || "Could not list target frames")
+  }
+  return payload as TargetFrames
+}
+
 export function loadSavedPenFrames(): PenFrames {
   try {
     const raw = window.localStorage.getItem(PEN_FRAMES_STORAGE_KEY)

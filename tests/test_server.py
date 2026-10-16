@@ -120,6 +120,12 @@ def test_invalid_requests_return_400(base_url):
     payload = json.loads(exc_info.value.read())
     assert "empty" in payload["error"]
 
+    no_frame = Request(f"{base_url}/frame", data=b"", method="POST")
+    with pytest.raises(HTTPError) as exc_info:
+        urlopen(no_frame)
+    assert exc_info.value.code == 400
+    assert "frame is required" in json.loads(exc_info.value.read())["error"]
+
 
 def test_serves_built_web_app(base_url):
     with urlopen(f"{base_url}/") as response:

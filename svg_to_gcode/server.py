@@ -309,6 +309,17 @@ def run_point_down_request(params: dict[str, list[str]]) -> dict[str, object]:
     return {"turned_deg": round(robot.point_down(Shell(pub, cmd)), 1)}
 
 
+def run_set_frame_request(params: dict[str, list[str]]) -> dict[str, object]:
+    frame = query_str(params, "frame", "")
+    if not frame:
+        raise ValueError("frame is required")
+    host = query_str(params, "host", DEFAULT_HOST)
+    pub = query_str(params, "pub", "") or f"tcp://{host}:{PUB_PORT}"
+    cmd = query_str(params, "cmd", "") or f"tcp://{host}:{CMD_PORT}"
+    robot.switch_frame(Shell(pub, cmd), frame)
+    return {"current": frame}
+
+
 def run_frames_request(params: dict[str, list[str]]) -> dict[str, object]:
     host = query_str(params, "host", DEFAULT_HOST)
     pub = query_str(params, "pub", "") or f"tcp://{host}:{PUB_PORT}"
@@ -429,6 +440,8 @@ def dispatch(method: str, target: str, body: bytes, content_type: str = "") -> R
             return json_response(HTTPStatus.OK, result)
         if path == "/point_down":
             return json_response(HTTPStatus.OK, run_point_down_request(params))
+        if path == "/frame":
+            return json_response(HTTPStatus.OK, run_set_frame_request(params))
         if path == "/conveyor":
             result = run_conveyor_request(params)
             return json_response(HTTPStatus.OK, result)

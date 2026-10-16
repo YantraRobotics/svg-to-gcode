@@ -753,6 +753,12 @@ def check_frames_served(shell: Shell, frames: set[str]) -> None:
         )
 
 
+def switch_frame(shell: Shell, frame: str) -> None:
+    """Make frame the controller's active tip, refusing frames it does not serve."""
+    check_frames_served(shell, {frame})
+    select_frame(shell, frame)
+
+
 def select_frame(shell: Shell, frame: str) -> None:
     """Switch the controller's tip to frame once the arm stands still."""
     deadline = time.monotonic() + FRAME_SWITCH_TIMEOUT_S
