@@ -109,10 +109,12 @@ export function PenFramesSettings({
 
         <div className="space-y-3 px-4 py-3">
           <p className="text-[11px] text-[#6B6661]">
-            Map each mounted pen to the controller target frame at its tip. At
-            every pen change the arm switches to that frame, and after each pen
-            it rises 50 mm. Once any pen has a frame, every pen a drawing uses
-            needs one; with none mapped, pens are swapped by hand.
+            Map each mounted pen to the controller target frame at its tip. The
+            pen on the active frame draws first. After each pen the arm rises
+            100 mm, switches to the next pen's frame and turns only W3 to bring
+            its nib where the last one was. Once any pen has a frame, every pen
+            a drawing uses needs one; with none mapped, pens are swapped by
+            hand.
           </p>
 
           <div className="flex items-center justify-between rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/60 px-2.5 py-1.5 text-[11px] font-mono">

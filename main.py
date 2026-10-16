@@ -535,8 +535,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=pen_frame_map,
         metavar="NAME=FRAME,...",
         help="the controller target frame each mounted pen's tip is, e.g. "
-        "red=target_frame_1,green=target_frame_2; pen changes then switch frames "
-        f"instead of swapping, and each pen ends {robot.FRAME_LIFT_MM:g} mm higher",
+        "red=target_frame_1,green=target_frame_2; the active frame's pen draws "
+        f"first, each pen ends {robot.FRAME_LIFT_MM:g} mm higher, and pen changes "
+        "then switch frames, turning wrist 3 onto the last nib, instead of swapping",
     )
     draw.add_argument(
         "--dry-run",

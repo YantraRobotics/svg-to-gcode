@@ -59,7 +59,7 @@ MAX_TRACKING_ERROR_MM = 25.0
 ABORT_LIFT_MM = 10.0
 ABORT_LIFT_FEED_MM_MIN = 600.0
 PEN_CHANGE_HEIGHT_MM = 80.0
-FRAME_LIFT_MM = 50.0
+FRAME_LIFT_MM = 100.0
 # PROTOCOL.md: SET_TARGET_FRAME is refused while any joint moves at 0.02 rad/s.
 STATIONARY_RAD_S = 0.01
 FRAME_SWITCH_TIMEOUT_S = 5.0
@@ -480,6 +480,11 @@ def pen_runs(
     return runs
 
 
+def active_first(runs: list[PenRun], active: str) -> list[PenRun]:
+    """runs with those drawn at the active frame moved to the front, otherwise in order."""
+    return sorted(runs, key=lambda run: run.frame != active)
+
+
 def check_on_paper(text: str, size: tuple[float, float]) -> None:
     """Refuse G-code that goes beyond the paper its corners span."""
     width, height = size
@@ -693,14 +698,16 @@ def draw_with_frames(
 ) -> float:
     """Draw each pen at its target frame; returns the largest pen-tip error (mm).
 
-    Pens stay mounted: at each pen change the controller's tip switches to the
-    pen's frame, the new tip approaches the strokes from wherever it is, and
-    after the pen's last stroke it rises FRAME_LIFT_MM straight up in the base
-    frame. pen_offset reaches beyond every frame along its +X.
+    Pens stay mounted and the pen on the active frame draws first. Every pen
+    rises FRAME_LIFT_MM straight up in the base frame after its last stroke;
+    the next pen's frame then becomes the tip, wrist 3 turning its nib onto the
+    previous one's (switch_frame), and it approaches its strokes from there.
+    pen_offset reaches beyond every frame along its +X.
     """
     runs = pen_runs(parse_gcode(text, (0.0, 0.0, 0.0), rapid_feed), pen_frames, tool)
     check_not_in_error(shell)
-    check_frames_served(shell, {run.frame for run in runs})
+    active = check_frames_served(shell, {run.frame for run in runs})["current"]
+    runs = active_first(runs, active)
     if not ensure_running_mode(shell, "world_twist"):
         raise DrawError("could not bring the controller to running in world_twist")
     worst = 0.0
@@ -708,8 +715,14 @@ def draw_with_frames(
         plotter = Plotter(shell, placement, pen_offset, announcer)
         try:
             for run in runs:
-                plotter.stop()
-                select_frame(shell, run.frame)
+                if run.frame != active:
+                    plotter.stop()
+                    switch_frame(shell, run.frame)
+                    active = run.frame
+                    if not ensure_running_mode(shell, "world_twist"):
+                        raise DrawError(
+                            "could not bring the controller back to world_twist"
+                        )
                 announcer.announce(run.pen)
                 worst = max(worst, plotter.draw_run(run, rapid_feed, tilt_deg))
                 plotter.rise(FRAME_LIFT_MM, rapid_feed)

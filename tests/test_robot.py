@@ -640,22 +640,36 @@ class FramedArm(FakeArm):
         return True
 
 
-def test_mounted_pens_switch_frames_and_rise_after_each_pen(monkeypatch):
+MOUNTED_OFFSETS = {
+    "target_frame": (0.0, 0.0, 0.0),
+    "target_frame_1": (0.03, 0.0, 0.0),
+    "target_frame_2": (0.0, 0.03, -0.01),
+}
+MOUNTED_PLACEMENT = robot.Placement((300.0, 0.0, 0.0), 0.0, 0.0)
+
+
+@pytest.fixture
+def mounted_arm(monkeypatch):
+    """A FramedArm on target_frame whose frame switches skip the wrist turn."""
     clock = FakeClock()
     monkeypatch.setattr(robot, "time", clock)
     monkeypatch.setattr(robot, "ensure_running_mode", lambda shell, mode: True)
+    monkeypatch.setattr(robot, "switch_frame", robot.select_frame)
+    start = MOUNTED_PLACEMENT.to_base((0.0, 0.0, 30.0))
+    return FramedArm(
+        clock,
+        (*start, *VERTICAL),
+        stall_on_read=0,
+        stall_s=0.0,
+        offsets=MOUNTED_OFFSETS,
+    )
+
+
+def test_mounted_pens_switch_frames_and_rise_after_each_pen(monkeypatch, mounted_arm):
     announcer = SilentAnnouncer()
     monkeypatch.setattr(robot, "PenAnnouncer", lambda: announcer)
-    placement = robot.Placement((300.0, 0.0, 0.0), 0.0, 0.0)
-    offsets = {
-        "target_frame": (0.0, 0.0, 0.0),
-        "target_frame_1": (0.03, 0.0, 0.0),
-        "target_frame_2": (0.0, 0.03, -0.01),
-    }
-    start = placement.to_base((0.0, 0.0, 30.0))
-    arm = FramedArm(
-        clock, (*start, *VERTICAL), stall_on_read=0, stall_s=0.0, offsets=offsets
-    )
+    placement = MOUNTED_PLACEMENT
+    arm = mounted_arm
 
     worst = robot.draw(
         arm,
@@ -679,6 +693,43 @@ def test_mounted_pens_switch_frames_and_rise_after_each_pen(monkeypatch):
     )
     end = placement.to_paper(arm.position)
     assert end == pytest.approx((30.0, 20.0, 5.0 + robot.FRAME_LIFT_MM), abs=within)
+
+
+def test_the_pen_on_the_active_frame_draws_first(monkeypatch, mounted_arm):
+    announcer = SilentAnnouncer()
+    monkeypatch.setattr(robot, "PenAnnouncer", lambda: announcer)
+    mounted_arm.current = "target_frame_2"
+
+    robot.draw(
+        mounted_arm,
+        TOOL_TABLE + TWO_PENS,
+        MOUNTED_PLACEMENT,
+        0.0,
+        RAPID_MM_MIN,
+        0.0,
+        None,
+        pen_frames=PEN_FRAMES,
+    )
+
+    assert announcer.pens == [BLACK, pens.Pen("yellow", (0xFF, 0xF2, 0x00))]
+    assert mounted_arm.switches == ["target_frame_1"]
+    within = 2 * robot.SETTLE_TOLERANCE_MM
+    black_done = MOUNTED_PLACEMENT.to_paper(mounted_arm.switched_from[0])
+    assert black_done == pytest.approx(
+        (30.0, 20.0, 5.0 + robot.FRAME_LIFT_MM), abs=within
+    )
+
+
+def test_active_first_keeps_the_other_pens_in_order():
+    runs = robot.pen_runs(parse(TWO_PENS + TWO_PENS), PEN_FRAMES)
+    ordered = robot.active_first(runs, "target_frame_2")
+    assert [run.frame for run in ordered] == [
+        "target_frame_2",
+        "target_frame_2",
+        "target_frame_1",
+        "target_frame_1",
+    ]
+    assert robot.active_first(runs, "target_frame") == runs
 
 
 def test_mounted_pens_need_frames_the_controller_serves(monkeypatch):
