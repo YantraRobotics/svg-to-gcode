@@ -98,7 +98,15 @@ const PEN_PRESETS: Record<string, PenEntry[]> = {
     { name: "black", hex: "#231F20", nibMm: 0.8 },
   ],
   mono: [{ name: "black", hex: "#231F20", nibMm: 0.5 }],
+  night: [
+    { name: "grey", hex: "#8A8D8F", nibMm: 1.3 },
+    { name: "red", hex: "#D52B1E", nibMm: 1.3 },
+    { name: "blue", hex: "#1B4F9C", nibMm: 1.3 },
+    { name: "black", hex: "#231F20", nibMm: 1.3 },
+  ],
 }
+
+const HATCHED_STYLES = ["fill", "night"]
 
 function serializePens(pens: PenEntry[]): string {
   return pens
@@ -461,7 +469,7 @@ export function App() {
     const preset = PEN_PRESETS[presetKey]
     if (preset) {
       setPens(preset.map((p) => ({ ...p })))
-      if (traceStyle === "fill") {
+      if (HATCHED_STYLES.includes(traceStyle)) {
         setHatchSpacing(preset[0].nibMm)
       }
     }
@@ -478,6 +486,11 @@ export function App() {
       setResolution(400)
       setSmoothing(5)
       setSpeckle(8)
+      setHatchSpacing(pens[0]?.nibMm ?? 0.8)
+    } else if (nextStyle === "night") {
+      setResolution(400)
+      setSmoothing(5)
+      setSpeckle(4)
       setHatchSpacing(pens[0]?.nibMm ?? 0.8)
     } else {
       setResolution(140)
@@ -986,6 +999,7 @@ export function App() {
                       <SelectItem value="expo">Expo (RGBK)</SelectItem>
                       <SelectItem value="cmyk">CMYK</SelectItem>
                       <SelectItem value="mono">Monochrome</SelectItem>
+                      <SelectItem value="night">Night (GRBK)</SelectItem>
                     </SelectContent>
                   </Select>
                   <button
@@ -1068,6 +1082,7 @@ export function App() {
                       <SelectItem value="one-line">One-Line</SelectItem>
                       <SelectItem value="tone">Line Screen</SelectItem>
                       <SelectItem value="fill">Filled Regions</SelectItem>
+                      <SelectItem value="night">Night Scene</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1089,7 +1104,8 @@ export function App() {
                 </div>
               </div>
 
-              {(traceStyle === "centerline" || traceStyle === "fill") && (
+              {(traceStyle === "centerline" ||
+                HATCHED_STYLES.includes(traceStyle)) && (
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
                     <Label className="text-[11px] text-[#6B6661]">

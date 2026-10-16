@@ -340,3 +340,70 @@ def test_centerline_draws_each_pens_lines_once_along_their_middle(tmp_path):
         assert line[:, 1] == pytest.approx(row, abs=1.0)
         assert line[:, 0].min() < 35
         assert line[:, 0].max() > 165
+
+
+NIGHT_PENS = pens.parse_pens("grey=#8A8D8F,red=#D52B1E,blue=#1B4F9C,black=#231F20")
+NIGHT_GREY, NIGHT_RED, NIGHT_BLUE, NIGHT_BLACK = (
+    next(pen for pen in NIGHT_PENS if pen.name == name)
+    for name in ("grey", "red", "blue", "black")
+)
+
+
+def night_layers(svg: str) -> dict[str, list[ET.Element]]:
+    return {
+        layer.get(LABEL): layer.findall(f"{{{image.SVG_NS}}}path")
+        for layer in ET.fromstring(svg).iter(f"{{{image.SVG_NS}}}g")
+    }
+
+
+def test_night_pens_split_into_line_pens_and_colour_pens():
+    neutrals, colours = image._night_pens(NIGHT_PENS)
+    assert neutrals == [NIGHT_BLACK, NIGHT_GREY]
+    assert set(colours) == {NIGHT_RED, NIGHT_BLUE}
+    levels = image._line_levels(neutrals)
+    assert levels[NIGHT_BLACK] == [min(image.NIGHT_LINE_LEVELS)]
+    assert max(image.NIGHT_LINE_LEVELS) in levels[NIGHT_GREY]
+    assert image._line_levels([NIGHT_BLACK]) == {
+        NIGHT_BLACK: sorted(image.NIGHT_LINE_LEVELS)
+    }
+
+
+def test_night_scene_fills_paint_and_outlines_what_is_lit(tmp_path):
+    picture = Image.new("RGB", (CARD_PX, CARD_PX), "black")
+    draw = ImageDraw.Draw(picture)
+    draw.rectangle([20, 20, 90, 90], fill=(240, 240, 240))
+    draw.rectangle([110, 110, 180, 180], fill=(40, 60, 150))
+    for x in range(115, 180, 12):
+        draw.line([(x, 110), (x, 180)], fill=(200, 200, 210), width=2)
+    image_file = tmp_path / "night.jpg"
+    picture.save(image_file)
+
+    svg = image.image_to_night(image_file, NIGHT_PENS, CARD_PX, 3, 4.0)
+
+    found = night_layers(svg)
+    assert set(found) == {"blue", "black", "grey"}
+    (blue,) = found["blue"]
+    assert blue.get("fill") == NIGHT_BLUE.hex
+    rings = [
+        np.array(re.findall(r"(-?[\d.]+),(-?[\d.]+)", ring), dtype=float)
+        for ring in blue.get("d").split("Z")
+        if ring.strip()
+    ]
+    painted = np.vstack(rings)
+    assert painted.min(axis=0) == pytest.approx((110, 110), abs=6)
+    assert painted.max(axis=0) == pytest.approx((180, 180), abs=6)
+    assert len(rings) > 1, "the highlights stay paper"
+    (outline,) = found["black"]
+    assert outline.get("fill") == "none"
+    points = np.array(
+        re.findall(r"(-?[\d.]+),(-?[\d.]+)", outline.get("d")), dtype=float
+    )
+    assert points.min(axis=0) == pytest.approx((20, 20), abs=3)
+    assert points.max(axis=0) == pytest.approx((180, 180), abs=3)
+
+
+def test_dark_image_has_no_night_scene_to_draw(tmp_path):
+    image_file = tmp_path / "dark.png"
+    Image.new("RGB", (CARD_PX, CARD_PX), "black").save(image_file)
+    with pytest.raises(ValueError, match="nothing to draw"):
+        image.image_to_night(image_file, NIGHT_PENS, CARD_PX, 3, 4.0)

@@ -1,10 +1,11 @@
 import math
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
-from contourpy import FillType, contour_generator
+from contourpy import FillType, LineType, contour_generator
 from PIL import Image, ImageFilter, ImageOps
 from scipy import ndimage
 
@@ -17,6 +18,7 @@ from svg_to_gcode.pens import (
     ink_coverage,
     nearest_index,
     overlay,
+    to_lab,
 )
 
 SVG_NS = "http://www.w3.org/2000/svg"
@@ -74,6 +76,20 @@ CENTERLINE_SMOOTHING_PX = 2
 # A lone skeleton pixel, the middle of a dot, is drawn as a stroke this long.
 DOT_PX = 0.5
 EIGHT_CONNECTED = np.ones((3, 3), dtype=bool)
+# Night scenes. Glossy paint at night breaks up into reflections and highlights
+# pixel by pixel, so colour is judged over NIGHT_COLOUR_BLUR of the image's long
+# side: an area that saturated (CIE Lab chroma) takes the colour pen nearest its
+# hue, if one is within NIGHT_MAX_HUE_DEG, unless the pixel is lighter than
+# NIGHT_MAX_COLOUR_LIGHTNESS. Pens less saturated than NIGHT_MIN_PEN_CHROMA are
+# not colour pens. The other pens draw lines where the lightness, blurred by
+# NIGHT_LINE_BLUR_PX, crosses NIGHT_LINE_LEVELS (L*), darker pens darker levels.
+NIGHT_COLOUR_BLUR = 0.006
+NIGHT_MIN_CHROMA = 18.0
+NIGHT_MIN_PEN_CHROMA = 20.0
+NIGHT_MAX_HUE_DEG = 50.0
+NIGHT_MAX_COLOUR_LIGHTNESS = 60.0
+NIGHT_LINE_LEVELS = (8.0, 25.0, 55.0)
+NIGHT_LINE_BLUR_PX = 1.0
 # A pixel's neighbours as (row, column) steps, clockwise from north.
 NEIGHBOURS = ((-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1))
 
@@ -238,6 +254,130 @@ def image_to_centerline(
     if svg.find(f"{{{SVG_NS}}}g") is None:
         raise ValueError(f"{image_file} has nothing to draw: it is all paper white")
     return ET.tostring(svg, encoding="unicode")
+
+
+def image_to_night(
+    image_file: Path, pens: list[Pen], resolution: int, smoothing: int, speckle: float
+) -> str:
+    """An SVG for lit subjects on a dark background, such as a stage at night.
+
+    The dark is left as paper. Areas whose colour cast is saturated are filled by
+    the colour pen nearest their hue, and the unsaturated pens draw contour lines
+    where the lightness crosses NIGHT_LINE_LEVELS, outlining what is lit and the
+    dark details inside it: the darkest pen the darkest level, a lighter one the
+    lighter levels. The image is shrunk to at most resolution px on its
+    long side, a smoothing x smoothing mode filter votes away stray pixels, and
+    colour regions or holes under speckle x speckle px and lines shorter than
+    speckle px are dropped.
+    """
+    neutrals, colours = _night_pens(pens)
+    lab = to_lab(np.asarray(load_image(image_file, resolution)))
+    labels = night_colours(lab, colours, smoothing)
+    min_area = speckle * speckle
+    height, width = labels.shape
+    svg = _svg(width, height)
+    _add_paper(svg, width, height)
+    for index, pen in enumerate(colours, start=1):
+        rings = trace(despeckle(labels == index, min_area), min_area)
+        if rings:
+            _add_layer(
+                svg,
+                pen,
+                {
+                    "d": path_data(rings),
+                    "fill": pen.hex,
+                    "fill-rule": "evenodd",
+                    "stroke": "none",
+                },
+            )
+    for pen, levels in _line_levels(neutrals).items():
+        lines = lightness_lines(lab[..., 0], levels, speckle)
+        if not lines:
+            continue
+        _add_layer(
+            svg,
+            pen,
+            {
+                "d": polyline_data(lines),
+                "fill": "none",
+                "stroke": pen.hex,
+                "stroke-width": "1",
+                "stroke-linecap": "round",
+                "stroke-linejoin": "round",
+            },
+        )
+    if svg.find(f"{{{SVG_NS}}}g") is None:
+        raise ValueError(f"{image_file} has nothing to draw: it is all one tone")
+    return ET.tostring(svg, encoding="unicode")
+
+
+def night_colours(lab: np.ndarray, colours: list[Pen], smoothing: int) -> np.ndarray:
+    """Per pixel, 0 for no colour or 1 + the index of the colour pen that inks it."""
+    labels = np.zeros(lab.shape[:2], dtype=np.uint8)
+    if not colours:
+        return labels
+    sigma = NIGHT_COLOUR_BLUR * max(labels.shape)
+    a = ndimage.gaussian_filter(lab[..., 1], sigma)
+    b = ndimage.gaussian_filter(lab[..., 2], sigma)
+    pen_hues = np.array([_hue(pen) for pen in colours])
+    turns = np.abs(
+        np.angle(np.exp(1j * (np.arctan2(b, a)[..., np.newaxis] - pen_hues)))
+    )
+    inked = (
+        (np.hypot(a, b) >= NIGHT_MIN_CHROMA)
+        & (turns.min(axis=-1) <= math.radians(NIGHT_MAX_HUE_DEG))
+        & (lab[..., 0] <= NIGHT_MAX_COLOUR_LIGHTNESS)
+    )
+    labels[inked] = np.argmin(turns, axis=-1)[inked] + 1
+    return np.asarray(Image.fromarray(labels).filter(ImageFilter.ModeFilter(smoothing)))
+
+
+def lightness_lines(
+    lightness: np.ndarray, levels: Sequence[float], min_length: float
+) -> list[np.ndarray]:
+    """Lines (x, y in px) where the blurred lightness crosses each level (L*)."""
+    blurred = ndimage.gaussian_filter(lightness, NIGHT_LINE_BLUR_PX)
+    generator = contour_generator(z=blurred, line_type=LineType.Separate)
+    lines = []
+    for level in levels:
+        for line in generator.lines(level):
+            length = np.sum(np.hypot(*np.diff(line, axis=0).T))
+            if len(line) > 1 and length >= min_length:
+                lines.append(line + PIXEL_CENTER)
+    return lines
+
+
+def _night_pens(pens: list[Pen]) -> tuple[list[Pen], list[Pen]]:
+    """The pens that draw lines, darkest first, and the saturated pens that fill colour.
+
+    The darkest pen always draws lines, however saturated.
+    """
+    if not pens:
+        raise ValueError("a night scene needs at least a dark pen")
+    darkest, *others = sorted(pens, key=lambda pen: to_lab(np.array(pen.rgb))[0])
+    colours = [pen for pen in others if _chroma(pen) >= NIGHT_MIN_PEN_CHROMA]
+    if len(colours) > MAX_LABEL:
+        raise ValueError(f"a night scene takes at most {MAX_LABEL} colour pens")
+    return [darkest, *(pen for pen in others if pen not in colours)], colours
+
+
+def _line_levels(neutrals: list[Pen]) -> dict[Pen, list[float]]:
+    """NIGHT_LINE_LEVELS, darkest first, shared out one each to the pens darkest
+    first, the lightest pen taking any left over."""
+    shares: dict[Pen, list[float]] = {}
+    for index, level in enumerate(sorted(NIGHT_LINE_LEVELS)):
+        shares.setdefault(neutrals[min(index, len(neutrals) - 1)], []).append(level)
+    return shares
+
+
+def _chroma(pen: Pen) -> float:
+    _, a, b = to_lab(np.array(pen.rgb))
+    return math.hypot(a, b)
+
+
+def _hue(pen: Pen) -> float:
+    _, a, b = to_lab(np.array(pen.rgb))
+    return math.atan2(b, a)
 
 
 def despeckle(mask: np.ndarray, min_area: float) -> np.ndarray:

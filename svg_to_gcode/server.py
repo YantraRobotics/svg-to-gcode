@@ -42,7 +42,7 @@ DEFAULT_TILT_DEG = 15.0
 DEFAULT_SWAP_WAIT_S = 5.0
 CORNER_COORDINATE_COUNT = 12
 ORIGIN_COORDINATE_COUNT = 3
-STYLES = ("fill", "tone", "one-line", "centerline")
+STYLES = ("fill", "tone", "one-line", "centerline", "night")
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 
 
@@ -148,6 +148,10 @@ def convert_image_bytes(body: bytes, params: dict[str, list[str]]) -> str:
             return image.image_to_one_line(image_path, pen_list, resolution, breaks)
         if style == "centerline":
             return image.image_to_centerline(
+                image_path, pen_list, resolution, smoothing, speckle
+            )
+        if style == "night":
+            return image.image_to_night(
                 image_path, pen_list, resolution, smoothing, speckle
             )
         return image.image_to_svg(
