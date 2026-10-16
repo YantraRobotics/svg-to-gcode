@@ -27,7 +27,7 @@ from robot_interface import (
     encode_get_model,
     parse_model,
 )
-from svg_to_gcode import tilt
+from svg_to_gcode import tilt, wrist
 from svg_to_gcode.pens import PEN_NAME, Pen, parse_hex
 
 log = logging.getLogger(__name__)
@@ -63,6 +63,11 @@ FRAME_LIFT_MM = 50.0
 # PROTOCOL.md: SET_TARGET_FRAME is refused while any joint moves at 0.02 rad/s.
 STATIONARY_RAD_S = 0.01
 FRAME_SWITCH_TIMEOUT_S = 5.0
+# W3J, last in URDF chain order.
+WRIST_JOINT = 5
+WRIST_MAX_RAD_S = 0.3
+WRIST_TOLERANCE_RAD = 0.002
+WRIST_SETTLE_TIMEOUT_S = 5.0
 # A bigger turn is more likely a frame whose +X is not along its pen.
 MAX_POINT_DOWN_DEG = 90.0
 POINT_DOWN_KP_LIN = 1.5
@@ -579,8 +584,8 @@ def check_not_in_error(shell: Shell) -> None:
         )
 
 
-def check_tip_link(shell: Shell) -> None:
-    """Refuse a controller whose TCP is not the Hand-E target_frame."""
+def served_model(shell: Shell) -> dict:
+    """The controller's MODEL: base_link, tip_link and urdf_xml."""
     shell.req.send(encode_get_model())
     try:
         model = parse_model(shell.req.recv())
@@ -588,6 +593,12 @@ def check_tip_link(shell: Shell) -> None:
         raise DrawError("no reply to GET_MODEL; is the controller serving?") from None
     if model is None:
         raise DrawError("the controller did not answer GET_MODEL with its model")
+    return model
+
+
+def check_tip_link(shell: Shell) -> None:
+    """Refuse a controller whose TCP is not the Hand-E target_frame."""
+    model = served_model(shell)
     if model["tip_link"] != TIP_LINK:
         raise DrawError(
             f"the controller's tip link is {model['tip_link']!r}, but the pen "
@@ -738,8 +749,8 @@ def point_down(shell: Shell) -> float:
     return math.degrees(angle)
 
 
-def check_frames_served(shell: Shell, frames: set[str]) -> None:
-    """Refuse frames the controller cannot switch its tip to."""
+def check_frames_served(shell: Shell, frames: set[str]) -> dict:
+    """Refuse frames the controller cannot switch its tip to; returns its tips."""
     tips = shell.get_target_frame()
     if tips is None:
         raise DrawError(
@@ -751,12 +762,48 @@ def check_frames_served(shell: Shell, frames: set[str]) -> None:
             f"the controller has no target frame {', '.join(missing)}; it offers "
             f"{', '.join(tips['eligible']) or 'none'}"
         )
+    return tips
 
 
-def switch_frame(shell: Shell, frame: str) -> None:
-    """Make frame the controller's active tip, refusing frames it does not serve."""
-    check_frames_served(shell, {frame})
+def switch_frame(shell: Shell, frame: str) -> wrist.WristTurn:
+    """Make frame the controller's active tip and turn only the last joint so its
+    nib lands where the previous frame's was."""
+    check_not_in_error(shell)
+    previous = check_frames_served(shell, {frame})["current"]
+    if previous == frame:
+        return wrist.WristTurn(0.0, 0.0)
+    try:
+        turn = wrist.wrist_turn(served_model(shell)["urdf_xml"], previous, frame)
+    except ValueError as exc:
+        raise DrawError(str(exc)) from None
     select_frame(shell, frame)
+    turn_wrist(shell, turn.angle)
+    return turn
+
+
+def turn_wrist(shell: Shell, angle: float) -> None:
+    """Turn the last joint by angle (rad) on a smooth profile, holding the others."""
+    if not ensure_running_mode(shell, "joint_position"):
+        raise DrawError("could not bring the controller to running in joint_position")
+    start = tuple(_telemetry(shell)["q"])
+    duration = math.pi * abs(angle) / (2 * WRIST_MAX_RAD_S)
+    began = time.monotonic()
+    deadline = began + duration + WRIST_SETTLE_TIMEOUT_S
+    while True:
+        telemetry = _telemetry(shell)
+        progress = min(1.0, (time.monotonic() - began) / duration) if duration else 1.0
+        target = list(start)
+        target[WRIST_JOINT] += angle * (1 - math.cos(math.pi * progress)) / 2
+        error = abs(telemetry["q"][WRIST_JOINT] - target[WRIST_JOINT])
+        if progress == 1.0 and error < WRIST_TOLERANCE_RAD and _still(telemetry):
+            return
+        if time.monotonic() > deadline:
+            raise DrawError(
+                f"the wrist stopped {math.degrees(error):.1f} degrees short of its turn"
+            )
+        if not shell.send_jp(target, quiet=True):
+            raise DrawError("the controller refused the wrist's joint targets")
+        time.sleep(1.0 / LOOP_RATE_HZ)
 
 
 def select_frame(shell: Shell, frame: str) -> None:
@@ -775,9 +822,11 @@ def select_frame(shell: Shell, frame: str) -> None:
 
 def _stationary(shell: Shell) -> bool:
     telemetry = shell.telemetry(TELEMETRY_POLL_S)
-    return telemetry is not None and all(
-        abs(speed) < STATIONARY_RAD_S for speed in telemetry["qdot_measured"]
-    )
+    return telemetry is not None and _still(telemetry)
+
+
+def _still(telemetry: dict) -> bool:
+    return all(abs(speed) < STATIONARY_RAD_S for speed in telemetry["qdot_measured"])
 
 
 def orientations(

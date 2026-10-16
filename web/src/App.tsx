@@ -267,7 +267,7 @@ export function App() {
   const [rapid, setRapid] = useState<number>(1500)
   const [swapWait, setSwapWait] = useState<number>(5)
   const [robotHost, setRobotHost] = useState<string>("192.168.1.69")
-  const [pointedDown, setPointedDown] = useState<number | null>(null)
+  const [armNote, setArmNote] = useState<string | null>(null)
   const [targetFrames, setTargetFrames] = useState<TargetFrames | null>(null)
   const [chosenFrame, setChosenFrame] = useState<string>("")
   const [penFrames, setPenFrames] = useState<PenFrames>(loadSavedPenFrames)
@@ -600,7 +600,9 @@ export function App() {
       if (!res.ok) {
         throw new Error(payload.error || "Point down failed")
       }
-      setPointedDown(payload.turned_deg as number)
+      setArmNote(
+        `Frame pointed down (turned ${(payload.turned_deg as number).toFixed(1)}°)`
+      )
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err))
     } finally {
@@ -637,7 +639,9 @@ export function App() {
       setTargetFrames((prev) =>
         prev ? { ...prev, current: payload.current as string } : prev
       )
-      setPointedDown(null)
+      setArmNote(
+        `On ${payload.current} · W3 turned ${(payload.wrist_turn_deg as number).toFixed(1)}°, nib off ${(payload.miss_mm as number).toFixed(1)} mm`
+      )
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1665,10 +1669,11 @@ export function App() {
               )}
 
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] text-[#6B6661] truncate">
-                  {pointedDown !== null
-                    ? `Frame pointed down (turned ${pointedDown.toFixed(1)}°)`
-                    : "Active frame orientation"}
+                <span
+                  className="text-[11px] text-[#6B6661] truncate"
+                  title={armNote ?? undefined}
+                >
+                  {armNote ?? "Active frame orientation"}
                 </span>
                 <button
                   type="button"
@@ -1717,7 +1722,7 @@ export function App() {
                     !chosenFrame ||
                     chosenFrame === targetFrames?.current
                   }
-                  title="Make the chosen target frame the controller's active tip (the arm must be still)"
+                  title="Make the chosen target frame the active tip, turning only W3 so its nib lands where the current frame's is"
                   className="h-6 inline-flex items-center gap-0.5 rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/60 px-1.5 text-[11px] text-[#006699] hover:border-[#006699] cursor-pointer disabled:opacity-40 shrink-0"
                 >
                   <Crosshair className="h-3 w-3" /> Set frame

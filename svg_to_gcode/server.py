@@ -316,8 +316,12 @@ def run_set_frame_request(params: dict[str, list[str]]) -> dict[str, object]:
     host = query_str(params, "host", DEFAULT_HOST)
     pub = query_str(params, "pub", "") or f"tcp://{host}:{PUB_PORT}"
     cmd = query_str(params, "cmd", "") or f"tcp://{host}:{CMD_PORT}"
-    robot.switch_frame(Shell(pub, cmd), frame)
-    return {"current": frame}
+    turn = robot.switch_frame(Shell(pub, cmd), frame)
+    return {
+        "current": frame,
+        "wrist_turn_deg": round(math.degrees(turn.angle), 1),
+        "miss_mm": round(turn.miss_m * robot.MM_PER_M, 1),
+    }
 
 
 def run_frames_request(params: dict[str, list[str]]) -> dict[str, object]:

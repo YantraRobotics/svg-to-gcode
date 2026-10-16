@@ -705,18 +705,103 @@ def test_mounted_pens_need_frames_the_controller_serves(monkeypatch):
         )
 
 
-def test_switch_frame_changes_the_active_tip(monkeypatch):
+class JointArm:
+    """Joints that track streamed joint targets with PROTOCOL.md's converge law,
+    holding still once the 200 ms deadman lapses."""
+
+    GAIN = 7.0
+    MAX_RAD_S = 0.5
+
+    def __init__(self, clock: FakeClock, q, frames: list[str]):
+        self.clock = clock
+        self.q = list(q)
+        self.qdot = [0.0] * 6
+        self.target: list[float] | None = None
+        self.targeted_at = self.updated = clock.now
+        self.frames = frames
+        self.current = frames[0]
+        self.switches: list[str] = []
+        self.switched_at_q: list[list[float]] = []
+
+    def _advance(self) -> None:
+        dt = self.clock.now - self.updated
+        self.updated = self.clock.now
+        live = self.target is not None
+        live = live and self.clock.now < self.targeted_at + robot.DEADMAN_S
+        for joint in range(6):
+            speed = 0.0
+            if live:
+                speed = self.GAIN * (self.target[joint] - self.q[joint])
+                speed = max(-self.MAX_RAD_S, min(self.MAX_RAD_S, speed))
+            self.q[joint] += speed * dt
+            self.qdot[joint] = speed
+
+    def telemetry(self, timeout_s: float = 1.0) -> dict:
+        self._advance()
+        return {
+            "q": tuple(self.q),
+            "qdot_measured": tuple(self.qdot),
+            "controller_state": robot.RUNNING,
+            "motion_active": 1,
+            "fault": "",
+        }
+
+    def send_jp(self, q, quiet: bool = False) -> bool:
+        self._advance()
+        self.target = list(q)
+        self.targeted_at = self.clock.now
+        return True
+
+    def get_target_frame(self) -> dict:
+        return {"current": self.current, "eligible": sorted(self.frames)}
+
+    def set_target_frame(self, name: str) -> bool:
+        if not all(abs(speed) < 0.02 for speed in self.telemetry()["qdot_measured"]):
+            return False
+        self.switched_at_q.append(list(self.q))
+        self.current = name
+        self.switches.append(name)
+        return True
+
+
+@pytest.fixture
+def three_pen_arm(monkeypatch, three_pen_urdf):
     clock = FakeClock()
     monkeypatch.setattr(robot, "time", clock)
-    offsets = {"target_frame": (0.0, 0.0, 0.0), "target_frame_1": (0.0, 0.0, -0.02)}
-    arm = FramedArm(
-        clock, (0.3, 0.0, 0.1, *VERTICAL), stall_on_read=0, stall_s=0.0, offsets=offsets
+    modes = []
+    monkeypatch.setattr(
+        robot, "ensure_running_mode", lambda shell, mode: modes.append(mode) or True
     )
+    monkeypatch.setattr(
+        robot, "served_model", lambda shell: {"urdf_xml": three_pen_urdf}
+    )
+    frames = ["target_frame_1", "target_frame_2", "target_frame_3"]
+    arm = JointArm(clock, (0.1, -0.4, 0.8, 0.2, -0.3, 1.0), frames)
+    arm.modes = modes
+    return arm
 
-    robot.switch_frame(arm, "target_frame_1")
 
-    assert arm.current == "target_frame_1"
-    assert arm.position == pytest.approx((0.3, 0.0, 0.08))
+def test_switch_frame_turns_only_the_wrist_onto_the_old_nib(three_pen_arm):
+    start = list(three_pen_arm.q)
+
+    turn = robot.switch_frame(three_pen_arm, "target_frame_2")
+
+    assert three_pen_arm.switches == ["target_frame_2"]
+    assert three_pen_arm.switched_at_q == [start]
+    assert three_pen_arm.modes == ["joint_position"]
+    assert abs(math.degrees(turn.angle)) == pytest.approx(120.0, abs=0.01)
+    assert turn.miss_m == pytest.approx(0.0, abs=1e-5)
+    expected = start[:5] + [start[5] + turn.angle]
+    assert three_pen_arm.q == pytest.approx(expected, abs=robot.WRIST_TOLERANCE_RAD)
+    assert three_pen_arm.q[:5] == pytest.approx(start[:5], abs=1e-9)
+
+
+def test_switch_frame_to_the_active_frame_stays_put(three_pen_arm):
+    start = list(three_pen_arm.q)
+    turn = robot.switch_frame(three_pen_arm, "target_frame_1")
+    assert turn == robot.wrist.WristTurn(0.0, 0.0)
+    assert three_pen_arm.q == start
+    assert three_pen_arm.switches == []
 
 
 def test_switch_frame_refuses_a_frame_the_controller_lacks(monkeypatch):
