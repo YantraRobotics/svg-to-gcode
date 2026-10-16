@@ -2,7 +2,7 @@ import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from itertools import combinations
+from itertools import combinations, product
 
 import numpy as np
 
@@ -111,7 +111,12 @@ def to_linear(rgb: np.ndarray) -> np.ndarray:
 
 def to_lab(rgb: np.ndarray) -> np.ndarray:
     """CIE L*a*b* (D65) of sRGB colours with 0-255 channels, shape (..., 3)."""
-    xyz = to_linear(rgb) @ SRGB_TO_XYZ.T / D65_WHITE
+    return linear_to_lab(to_linear(rgb))
+
+
+def linear_to_lab(linear: np.ndarray) -> np.ndarray:
+    """CIE L*a*b* (D65) of linear sRGB light 0..1, shape (..., 3)."""
+    xyz = np.asarray(linear, dtype=float) @ SRGB_TO_XYZ.T / D65_WHITE
     f = np.where(xyz > LAB_EPSILON, np.cbrt(xyz), (LAB_KAPPA * xyz + 16) / 116)
     lightness = 116 * f[..., 1] - 16
     return np.stack(
@@ -122,9 +127,29 @@ def to_lab(rgb: np.ndarray) -> np.ndarray:
 
 def nearest_index(rgb: np.ndarray, pens: list[Pen]) -> np.ndarray:
     """Per colour, 0 when paper white is nearest in Lab, else 1 + the nearest pen's index."""
+    return nearest_lab_index(to_lab(rgb), pens)
+
+
+def nearest_lab_index(lab: np.ndarray, pens: list[Pen]) -> np.ndarray:
+    """nearest_index for colours already in CIE L*a*b*, shape (..., 3)."""
     inks = to_lab(np.array([PAPER_RGB, *(pen.rgb for pen in pens)]))
-    distances = np.linalg.norm(to_lab(rgb)[..., np.newaxis, :] - inks, axis=-1)
+    distances = np.linalg.norm(lab[..., np.newaxis, :] - inks, axis=-1)
     return np.argmin(distances, axis=-1)
+
+
+def coverage_mixes(
+    pens: list[Pen], levels: Sequence[float]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Every way of covering the paper with each pen at one of levels, shape
+    (mixes, pens), and the colour (CIE L*a*b*) each leaves, shape (mixes, 3).
+
+    Hatches of different pens cross, so in linear light the paper reflects, channel
+    by channel, the product over the pens of 1 - coverage * (1 - pen reflectance).
+    """
+    mixes = np.array(list(product(levels, repeat=len(pens))), dtype=float)
+    absorbed = 1.0 - to_linear(np.array([pen.rgb for pen in pens]))
+    reflected = np.prod(1.0 - mixes[..., np.newaxis] * absorbed, axis=1)
+    return mixes, linear_to_lab(reflected)
 
 
 def blends(pens: list[Pen], most: int) -> list[tuple[Pen, ...]]:

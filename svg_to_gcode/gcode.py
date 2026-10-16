@@ -32,12 +32,14 @@ MAX_SUBDIVISION_DEPTH = 12
 
 @dataclass(frozen=True)
 class Shape:
-    """An SVG shape and the pens nearest its fill and stroke (None draws nothing)."""
+    """An SVG shape, the pens nearest its fill and stroke (None draws nothing), and
+    the share of the paper the fill's opacity asks its pen to cover."""
 
     path: svg.Path
     fill: Pen | None
     stroke: Pen | None
     evenodd: bool
+    coverage: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -100,11 +102,11 @@ def svg_to_layers(
                 shape.fill.nib_mm
                 if shape.fill.nib_mm is not None and hatch_spacing > 0
                 else hatch_spacing
-            )
+            ) / shape.coverage
             if spacing > 0:
                 angle = hatch_angle + angle_step * pens.index(shape.fill)
                 strokes[shape.fill] += hatch(polylines, spacing, angle, shape.evenodd)
-            if outline:
+            if outline and shape.coverage == 1.0:
                 strokes[shape.fill] += [
                     _closed(ring) for ring in polylines if ring_area(ring) > 0
                 ]
@@ -190,7 +192,7 @@ def _load_shapes(svg_file: Path, pens: list[Pen]) -> list[Shape]:
         if element.values.get("visibility") == "hidden":
             continue
         if isinstance(element, svg.Shape):
-            fill, stroke = _paint(element.fill), _paint(element.stroke)
+            fill, stroke = _paint(element.fill, opaque=True), _paint(element.stroke)
             if fill is None and stroke is None:
                 continue
             path = svg.Path(element)
@@ -202,6 +204,7 @@ def _load_shapes(svg_file: Path, pens: list[Pen]) -> list[Shape]:
                         fill=nearest(fill, pens) if fill else None,
                         stroke=nearest(stroke, pens) if stroke else None,
                         evenodd=element.values.get("fill-rule") == "evenodd",
+                        coverage=element.fill.alpha / OPAQUE if fill else 1.0,
                     )
                 )
         elif isinstance(element, (svg.Text, svg.Image)):
@@ -214,11 +217,15 @@ def _load_shapes(svg_file: Path, pens: list[Pen]) -> list[Shape]:
     return shapes
 
 
-def _paint(color: svg.Color | None) -> RGB | None:
-    """The colour a fill or stroke leaves on paper white, or None when it leaves none."""
+def _paint(color: svg.Color | None, opaque: bool = False) -> RGB | None:
+    """The colour a fill or stroke leaves on paper white, or None when it leaves none.
+
+    Opaque gives the colour at full opacity: a fill's opacity is how much of the
+    paper its hatch covers rather than how pale its pen is.
+    """
     if color is None or color.value is None or color.alpha == 0:
         return None
-    opacity = color.alpha / OPAQUE
+    opacity = 1.0 if opaque else color.alpha / OPAQUE
     channels = (color.red, color.green, color.blue)
     return tuple(
         round(opacity * channel + (1 - opacity) * paper)

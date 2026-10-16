@@ -8,6 +8,7 @@ import numpy as np
 from contourpy import FillType, LineType, contour_generator
 from PIL import Image, ImageFilter, ImageOps
 from scipy import ndimage
+from scipy.spatial import cKDTree
 
 from svg_to_gcode import one_line
 from svg_to_gcode.hatch import ring_area
@@ -15,6 +16,7 @@ from svg_to_gcode.pens import (
     PAPER_RGB,
     Pen,
     blends,
+    coverage_mixes,
     ink_coverage,
     nearest_index,
     overlay,
@@ -90,6 +92,16 @@ NIGHT_MAX_HUE_DEG = 50.0
 NIGHT_MAX_COLOUR_LIGHTNESS = 60.0
 NIGHT_LINE_LEVELS = (8.0, 25.0, 55.0)
 NIGHT_LINE_BLUR_PX = 1.0
+# Photo fills stretch the lightness between these percentiles of the image to
+# the full range and scale the colour by PHOTO_CHROMA_BOOST: pens are less
+# varied than a photo's darks, so dim paint would otherwise go to the darkest pen.
+PHOTO_LIGHTNESS_PERCENTILES = (1.0, 99.5)
+PHOTO_CHROMA_BOOST = 1.5
+# Hatches through the origin at the nib's width over these shares of the paper
+# nest, so a pen's half shade continues its solid one's lines. Sparser shades
+# space lines so far apart at broad nibs that they read as a grid, not a tone.
+PHOTO_COVERAGES = (0.0, 0.5, 1.0)
+FULL_LIGHTNESS = 100.0
 # A pixel's neighbours as (row, column) steps, clockwise from north.
 NEIGHBOURS = ((-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1))
 
@@ -142,6 +154,73 @@ def image_to_svg(
             "or smaller than the speckle size"
         )
     return ET.tostring(svg, encoding="unicode")
+
+
+def image_to_photo_fill(
+    image_file: Path, pens: list[Pen], resolution: int, smoothing: int, speckle: float
+) -> str:
+    """An SVG with one Inkscape layer per pen, shading photos whose tones the pens
+    only reach once lifted (lifted_lab) to span the darkest pen to paper white,
+    so the darkest areas take that pen alone rather than every pen stacked.
+
+    Each pixel goes to the mix of pens, each covering none or PHOTO_COVERAGES of
+    the paper, nearest its lifted colour (coverage_mixes). A region a pen covers
+    in part is filled with that share as its fill-opacity, which hatches it that
+    much sparser. The image is shrunk to at most resolution px on its long side,
+    a smoothing x smoothing mode filter votes away stray pixels in each pen's
+    coverage, and regions or holes under speckle x speckle px are dropped.
+    """
+    darkest_pen = min(to_lab(np.array(pen.rgb))[0] for pen in pens)
+    lab = lifted_lab(
+        to_lab(np.asarray(load_image(image_file, resolution))), darkest_pen
+    )
+    mixes, mix_lab = coverage_mixes(pens, PHOTO_COVERAGES)
+    _, nearest_mix = cKDTree(mix_lab).query(lab.reshape(-1, 3))
+    height, width = lab.shape[:2]
+    covered = mixes[nearest_mix].reshape(height, width, len(pens))
+    svg = _svg(width, height)
+    for index, pen in enumerate(pens):
+        levels = np.searchsorted(PHOTO_COVERAGES, covered[..., index]).astype(np.uint8)
+        levels = np.asarray(
+            Image.fromarray(levels).filter(ImageFilter.ModeFilter(smoothing))
+        )
+        paths = [
+            {
+                "d": path_data(rings),
+                "fill": pen.hex,
+                "fill-opacity": f"{coverage:g}",
+                "fill-rule": "evenodd",
+                "stroke": "none",
+            }
+            for level, coverage in enumerate(PHOTO_COVERAGES)
+            if coverage > 0 and (rings := trace(levels == level, speckle * speckle))
+        ]
+        if paths:
+            _add_layer(svg, pen, *paths)
+    if not len(svg):
+        raise ValueError(
+            f"{image_file} has nothing to draw: every region is nearest paper white "
+            "or smaller than the speckle size"
+        )
+    return ET.tostring(svg, encoding="unicode")
+
+
+def lifted_lab(lab: np.ndarray, floor: float) -> np.ndarray:
+    """Colours (CIE L*a*b*) with the lightness stretched from floor to paper white
+    and the colour boosted, as PHOTO_* describe."""
+    lightness = lab[..., 0]
+    darkest, lightest = np.percentile(lightness, PHOTO_LIGHTNESS_PERCENTILES)
+    if lightest <= darkest:
+        return lab
+    stretched = np.clip((lightness - darkest) / (lightest - darkest), 0.0, 1.0)
+    return np.stack(
+        [
+            floor + (FULL_LIGHTNESS - floor) * stretched,
+            lab[..., 1] * PHOTO_CHROMA_BOOST,
+            lab[..., 2] * PHOTO_CHROMA_BOOST,
+        ],
+        axis=-1,
+    )
 
 
 def image_to_line_screen(image_file: Path, pens: list[Pen], resolution: int) -> str:
@@ -759,8 +838,8 @@ def _svg(width: int, height: int) -> ET.Element:
     )
 
 
-def _add_layer(svg: ET.Element, pen: Pen, path: dict[str, str]) -> None:
-    """A pen's Inkscape layer holding one path, multiplying over the layers below."""
+def _add_layer(svg: ET.Element, pen: Pen, *paths: dict[str, str]) -> None:
+    """A pen's Inkscape layer holding the paths, multiplying over the layers below."""
     layer = ET.SubElement(
         svg,
         f"{{{SVG_NS}}}g",
@@ -770,4 +849,5 @@ def _add_layer(svg: ET.Element, pen: Pen, path: dict[str, str]) -> None:
             "style": "mix-blend-mode:multiply",
         },
     )
-    ET.SubElement(layer, f"{{{SVG_NS}}}path", path)
+    for path in paths:
+        ET.SubElement(layer, f"{{{SVG_NS}}}path", path)

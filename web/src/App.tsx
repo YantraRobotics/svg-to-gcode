@@ -106,7 +106,7 @@ const PEN_PRESETS: Record<string, PenEntry[]> = {
   ],
 }
 
-const HATCHED_STYLES = ["fill", "night"]
+const HATCHED_STYLES = ["fill", "night", "photo"]
 
 function serializePens(pens: PenEntry[]): string {
   return pens
@@ -486,6 +486,11 @@ export function App() {
       setResolution(400)
       setSmoothing(5)
       setSpeckle(8)
+      setHatchSpacing(pens[0]?.nibMm ?? 0.8)
+    } else if (nextStyle === "photo") {
+      setResolution(600)
+      setSmoothing(3)
+      setSpeckle(3)
       setHatchSpacing(pens[0]?.nibMm ?? 0.8)
     } else if (nextStyle === "night") {
       setResolution(400)
@@ -1083,6 +1088,7 @@ export function App() {
                       <SelectItem value="tone">Line Screen</SelectItem>
                       <SelectItem value="fill">Filled Regions</SelectItem>
                       <SelectItem value="night">Night Scene</SelectItem>
+                      <SelectItem value="photo">Photo Fill</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

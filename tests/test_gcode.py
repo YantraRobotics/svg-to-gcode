@@ -139,6 +139,24 @@ def test_each_pen_hatches_at_its_own_angle(tmp_path):
     assert directions(magenta) == {135.0}
 
 
+def test_a_fills_opacity_hatches_its_pen_that_much_sparser(tmp_path):
+    def hatch_lines(opacity: str) -> list[gcode.Stroke]:
+        (layer,) = layers_for(
+            tmp_path,
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            f'<rect width="10" height="10" fill="#EC008C" fill-opacity="{opacity}"/>'
+            "</svg>",
+        )
+        assert layer.pen.name == "magenta"
+        return layer.strokes
+
+    solid, half = hatch_lines("1"), hatch_lines("0.5")
+
+    assert any(len(stroke) > 2 for stroke in solid), "solid fills are outlined"
+    assert all(len(stroke) == 2 for stroke in half), "partial fills are not"
+    assert len(half) == pytest.approx((len(solid) - 1) / 2, abs=1)
+
+
 def test_open_subpaths_fill_as_if_closed(tmp_path):
     (layer,) = layers_for(tmp_path, OPEN_TRIANGLE_SVG, paper=(30.0, 30.0))
     (outline,) = [stroke for stroke in layer.strokes if len(stroke) > 2]

@@ -42,6 +42,19 @@ def layers(svg: str) -> dict[str, list[np.ndarray]]:
     return found
 
 
+def shades(svg: str) -> dict[tuple[str, str], list[np.ndarray]]:
+    """Pen name and fill-opacity to the rings of each path in the pen's layer."""
+    found = {}
+    for layer in ET.fromstring(svg).iter(f"{{{image.SVG_NS}}}g"):
+        for path in layer.iter(f"{{{image.SVG_NS}}}path"):
+            found[layer.get(LABEL), path.get("fill-opacity")] = [
+                np.array(re.findall(r"(-?[\d.]+),(-?[\d.]+)", subpath), dtype=float)
+                for subpath in path.get("d").split("Z")
+                if subpath.strip()
+            ]
+    return found
+
+
 def convert(tmp_path, picture: Image.Image, **settings) -> str:
     image_file = tmp_path / "picture.png"
     picture.save(image_file)
@@ -407,3 +420,52 @@ def test_dark_image_has_no_night_scene_to_draw(tmp_path):
     Image.new("RGB", (CARD_PX, CARD_PX), "black").save(image_file)
     with pytest.raises(ValueError, match="nothing to draw"):
         image.image_to_night(image_file, NIGHT_PENS, CARD_PX, 3, 4.0)
+
+
+def test_photo_fill_lifts_dim_paint_to_its_colour(tmp_path):
+    picture = Image.new("RGB", (CARD_PX, CARD_PX), (2, 2, 4))
+    draw = ImageDraw.Draw(picture)
+    draw.rectangle([20, 20, 90, 90], fill=(20, 22, 60))
+    draw.rectangle([110, 110, 180, 180], fill=(235, 235, 235))
+    image_file = tmp_path / "dim.png"
+    picture.save(image_file)
+
+    lifted = shades(image.image_to_photo_fill(image_file, NIGHT_PENS, CARD_PX, 3, 4.0))
+    plain = layers(image.image_to_svg(image_file, NIGHT_PENS, CARD_PX, 3, 4.0, 1))
+
+    (blue,) = lifted["blue", "1"]
+    assert blue.min(axis=0) == pytest.approx((20, 20), abs=2)
+    assert blue.max(axis=0) == pytest.approx((91, 91), abs=2)
+    assert "blue" not in plain, "unlifted, the dim blue is nearest the black pen"
+    assert "grey" not in {pen for pen, _ in lifted}, "the black sky takes black alone"
+    assert len(lifted["black", "1"]) == 3, "the sky, holed by both squares"
+
+
+def test_photo_fill_shades_a_pen_by_its_coverage(tmp_path):
+    picture = Image.new("RGB", (CARD_PX, CARD_PX), "white")
+    ImageDraw.Draw(picture).rectangle([0, 0, CARD_PX // 2, CARD_PX], fill="black")
+    ImageDraw.Draw(picture).rectangle(
+        [CARD_PX // 2, 0, 3 * CARD_PX // 4, CARD_PX], fill=(100, 100, 100)
+    )
+    image_file = tmp_path / "steps.png"
+    picture.save(image_file)
+
+    found = shades(image.image_to_photo_fill(image_file, NIGHT_PENS, CARD_PX, 3, 4.0))
+
+    assert {("black", "1"), ("black", "0.5")} <= set(found)
+    (half,) = found["black", "0.5"]
+    assert half.min(axis=0)[0] == pytest.approx(CARD_PX // 2, abs=2)
+    assert half.max(axis=0)[0] == pytest.approx(3 * CARD_PX // 4 + 1, abs=2)
+
+
+def test_lifting_a_flat_image_leaves_it_alone():
+    flat = np.full((4, 4, 3), (30.0, 5.0, -5.0))
+    assert image.lifted_lab(flat, 10.0) is flat
+
+
+def test_lifting_stretches_from_the_floor_to_paper_white():
+    ramp = np.zeros((1, 201, 3))
+    ramp[..., 0] = np.linspace(5.0, 25.0, 201)
+    lifted = image.lifted_lab(ramp, 12.0)[0, :, 0]
+    assert lifted.min() == pytest.approx(12.0)
+    assert lifted.max() == pytest.approx(image.FULL_LIGHTNESS)

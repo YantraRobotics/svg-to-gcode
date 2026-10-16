@@ -77,6 +77,21 @@ def test_overlaid_inks_multiply(names, expected):
     assert mixed == pens.Pen("+".join(names), expected)
 
 
+def test_coverage_mixes_shade_from_paper_through_each_pen_to_their_overlay():
+    yellow, *_, black = CMYK
+    mixes, lab = pens.coverage_mixes([yellow, black], (0.0, 0.5, 1.0))
+    colour = {tuple(mix): mix_lab for mix, mix_lab in zip(mixes, lab)}
+
+    assert len(mixes) == 9
+    assert colour[0.0, 0.0] == pytest.approx(pens.to_lab(np.array(pens.PAPER_RGB)))
+    assert colour[1.0, 0.0] == pytest.approx(pens.to_lab(np.array(yellow.rgb)))
+    assert colour[1.0, 1.0] == pytest.approx(
+        pens.to_lab(np.array(pens.overlay([yellow, black]).rgb)), abs=0.5
+    )
+    lightness = [colour[0.0, level][0] for level in (0.0, 0.5, 1.0)]
+    assert lightness == sorted(lightness, reverse=True)
+
+
 def test_ink_coverage_leaves_paper_bare_and_finds_pens_and_their_mixes():
     yellow, cyan, magenta, _ = CMYK
     colours = [
