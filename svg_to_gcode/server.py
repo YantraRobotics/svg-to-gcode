@@ -4,6 +4,7 @@ import itertools
 import json
 import math
 import mimetypes
+import signal
 import tempfile
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -34,7 +35,7 @@ DEFAULT_PAPER = "A4"
 DEFAULT_MARGIN_MM = 10.0
 DEFAULT_TOLERANCE_MM = 0.1
 DEFAULT_FEED_MM_MIN = 1500.0
-DEFAULT_LIFT_MM = 5.0
+DEFAULT_LIFT_MM = 50.0
 DEFAULT_HATCH_MM = 0.8
 DEFAULT_HATCH_ANGLE_DEG = 45.0
 DEFAULT_RAPID_MM_MIN = 3000.0
@@ -539,6 +540,9 @@ def make_server(host: str, port: int) -> ThreadingHTTPServer:
 def serve(host: str, port: int) -> int:
     if not MIN_PORT <= port <= MAX_PORT:
         raise ValueError(f"port must be between {MIN_PORT} and {MAX_PORT}, got {port}")
+    # run.sh stops the server it runs in the background with SIGTERM: a background
+    # job starts with SIGINT ignored, so Ctrl-C's KeyboardInterrupt never comes.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     with make_server(host, port) as httpd:
         bound_host, bound_port = httpd.server_address[:2]
         print(f"listening on http://{bound_host}:{bound_port}", flush=True)

@@ -453,7 +453,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     to_gcode.add_argument("--feed", type=feed_rate, default=1500.0, help="mm/min")
     to_gcode.add_argument(
-        "--lift", type=positive, default=5.0, help="pen-up height above the paper, mm"
+        "--lift", type=positive, default=50.0, help="pen-up height above the paper, mm"
     )
     to_gcode.add_argument(
         "--hatch",

@@ -202,6 +202,21 @@ def test_pen_stays_down_into_a_stroke_that_starts_where_the_last_ended():
     assert inked == [2, 1]
 
 
+def test_high_lift_rapids_down_to_the_approach_height_before_plunging():
+    high_lift_mm = 50.0
+    strokes = [[(0.0, 0.0), (10.0, 0.0)], [(20.0, 0.0), (30.0, 0.0)]]
+    text = gcode.to_gcode([gcode.Layer(1, CMYK[3], strokes)], FEED_MM_MIN, high_lift_mm)
+
+    steps = robot.parse_gcode(text, (0.0, 0.0, high_lift_mm), RAPID_MM_MIN)
+    moves = [step for step in steps if isinstance(step, robot.Move)]
+    second_stroke = moves.index(next(m for m in moves if m.end == (20.0, 0.0, 0.0)))
+    lift, travel, approach, plunge = moves[second_stroke - 3 : second_stroke + 1]
+    assert lift.end == (10.0, 0.0, high_lift_mm) and lift.rapid
+    assert travel.end == (20.0, 0.0, high_lift_mm) and travel.rapid
+    assert approach.end == (20.0, 0.0, gcode.APPROACH_MM) and approach.rapid
+    assert plunge.feed == gcode.PLUNGE_FEED_MM_MIN and not plunge.rapid
+
+
 def test_fills_without_hatch_or_outline_draw_nothing(tmp_path):
     with pytest.raises(ValueError, match="nothing to draw"):
         layers_for(tmp_path, OPEN_TRIANGLE_SVG, hatch_spacing=0.0, outline=False)

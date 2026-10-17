@@ -271,7 +271,7 @@ export function App() {
   const [hatchAngle, setHatchAngle] = useState<number>(45)
   const [outline, setOutline] = useState<boolean>(true)
   const [feed, setFeed] = useState<number>(1000)
-  const [lift, setLift] = useState<number>(6)
+  const [lift, setLift] = useState<number>(50)
 
   const [placementMode, setPlacementMode] = useState<"origin" | "corners">(
     loadSavedPlacementMode
@@ -1360,7 +1360,7 @@ export function App() {
                     min={0.5}
                     step={0.5}
                     value={lift}
-                    onChange={(e) => setLift(Number(e.target.value) || 6)}
+                    onChange={(e) => setLift(Number(e.target.value) || 50)}
                     className="h-7 font-mono text-xs"
                   />
                 </div>

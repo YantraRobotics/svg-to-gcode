@@ -22,6 +22,9 @@ PAPER_SIZES_MM = {
     "LETTER": (215.9, 279.4),
 }
 PLUNGE_FEED_MM_MIN = 600.0
+# The pen drops at rapid speed to this height and plunges at PLUNGE_FEED_MM_MIN
+# only from there, so a high lift does not make every pen-down slow.
+APPROACH_MM = 5.0
 MIN_HATCH_MM = 0.1
 HALF_TURN_DEG = 180.0
 OPAQUE = 255
@@ -161,6 +164,8 @@ def to_gcode(layers: list[Layer], feed: float, lift: float) -> str:
     """G-code drawing each layer after a T<n> M6 pen change, listing the pens in comments.
 
     The pen stays down into a stroke that starts where the one before it ended.
+    Between strokes it rises to lift, and on the way down it rapids to APPROACH_MM
+    before plunging.
     """
     lines = ["G21", "G90"]
     lines += [f"; T{layer.tool} {layer.pen.name} {layer.pen.hex}" for layer in layers]
@@ -173,6 +178,8 @@ def to_gcode(layers: list[Layer], feed: float, lift: float) -> str:
                 if pen_down_at is not None:
                     lines.append(f"G0 Z{lift:.3f}")
                 lines.append(f"G0 X{start_x:.3f} Y{start_y:.3f}")
+                if lift > APPROACH_MM:
+                    lines.append(f"G0 Z{APPROACH_MM:.3f}")
                 lines.append(f"G1 Z0.000 F{PLUNGE_FEED_MM_MIN:g}")
             for index, (x, y) in enumerate(rest):
                 feed_word = f" F{feed:g}" if index == 0 else ""

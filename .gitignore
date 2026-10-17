@@ -29,3 +29,7 @@ output/
 # Web app dependencies
 web/node_modules/
 
+# run.sh background server
+server.log
+server.pid
+
