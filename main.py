@@ -116,6 +116,13 @@ def pen_frame_map(text: str) -> dict[str, str]:
         raise argparse.ArgumentTypeError(str(exc)) from None
 
 
+def frame_point_map(text: str) -> dict[str, tuple[float, float, float]]:
+    try:
+        return robot.parse_frame_points(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def run_image(args: argparse.Namespace) -> int:
     if args.tone:
         svg = image.image_to_line_screen(args.image, args.pens, args.resolution)
@@ -196,10 +203,22 @@ def run_draw(args: argparse.Namespace) -> int:
     if args.tool is not None:
         pen = robot.tool_table(text).get(args.tool)
         print(f"drawing only T{args.tool}" + (f" {pen.name} {pen.hex}" if pen else ""))
+    if args.frame_points and not args.pen_frames:
+        raise ValueError("--frame-points goes with --pen-frames")
     if args.pen_frames:
         steps = robot.parse_gcode(text, (0.0, 0.0, 0.0), args.rapid)
-        for run in robot.pen_runs(steps, args.pen_frames, args.tool):
-            print(f"T{run.tool} {run.pen.name} draws at {run.frame}")
+        runs = robot.pen_runs(steps, args.pen_frames, args.tool)
+        shifts = (
+            robot.frame_shifts(args.frame_points, {run.frame for run in runs})
+            if args.frame_points
+            else {}
+        )
+        for run in runs:
+            shift = shifts.get(run.frame)
+            moved = (
+                " shifted {:+.2f}, {:+.2f}, {:+.2f} mm".format(*shift) if shift else ""
+            )
+            print(f"T{run.tool} {run.pen.name} draws at {run.frame}{moved}")
     if args.dry_run:
         # The arm's start pose is unknown offline, so begin at the first XY travel.
         steps = robot.parse_gcode(text, (0.0, 0.0, 0.0), args.rapid)
@@ -229,6 +248,7 @@ def run_draw(args: argparse.Namespace) -> int:
         args.swap_wait,
         args.tool,
         args.pen_frames,
+        args.frame_points,
     )
     print(f"done; largest pen-tip error while drawing {worst:.2f} mm")
     return 0
@@ -538,6 +558,15 @@ def build_parser() -> argparse.ArgumentParser:
         "red=target_frame_1,green=target_frame_2; the active frame's pen draws "
         f"first, each pen ends {robot.FRAME_LIFT_MM:g} mm higher, and pen changes "
         "then switch frames, turning wrist 3 onto the last nib, instead of swapping",
+    )
+    draw.add_argument(
+        "--frame-points",
+        type=frame_point_map,
+        metavar="FRAME=X,Y,Z;...",
+        help="the tip each target frame reports, base frame mm, with its nib on one "
+        f"shared point; {robot.REFERENCE_FRAME}, which the corners or origin are "
+        "taught at, is needed, and every other frame draws shifted by how far its "
+        "point is from that one's",
     )
     draw.add_argument(
         "--dry-run",

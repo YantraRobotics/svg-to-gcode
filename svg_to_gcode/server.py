@@ -263,10 +263,16 @@ def run_draw_request(body: bytes, params: dict[str, list[str]]) -> dict[str, obj
         raise ValueError(f"tool must be positive, got {tool}")
     dry_run = query_bool(params, "dry_run", False)
     pen_frames = robot.parse_pen_frames(query_str(params, "frames", ""))
+    frame_points = robot.parse_frame_points(query_str(params, "frame_points", ""))
+    if frame_points and not pen_frames:
+        raise ValueError("frame_points go with frames; map the pens to frames")
 
     steps = robot.parse_gcode(text, (0.0, 0.0, 0.0), rapid)
+    shifts = {}
     if pen_frames:
-        robot.pen_runs(steps, pen_frames, tool)
+        runs = robot.pen_runs(steps, pen_frames, tool)
+        if frame_points:
+            shifts = robot.frame_shifts(frame_points, {run.frame for run in runs})
     moves = [step for step in steps if isinstance(step, robot.Move)]
     start = next((m.end for m in moves if m.start[:2] != m.end[:2]), moves[0].start)
     steps = robot.steps_to_draw(text, start, rapid, tool)
@@ -282,6 +288,10 @@ def run_draw_request(body: bytes, params: dict[str, list[str]]) -> dict[str, obj
         "bounds_mm": {"min": list(low), "max": list(high)},
         "dry_run": dry_run,
         "pen_frames": pen_frames,
+        "frame_shifts_mm": {
+            frame: [round(value, 2) for value in shift]
+            for frame, shift in shifts.items()
+        },
     }
     if dry_run:
         return summary
@@ -305,6 +315,7 @@ def run_draw_request(body: bytes, params: dict[str, list[str]]) -> dict[str, obj
         swap_wait,
         tool,
         pen_frames,
+        frame_points,
     )
     summary["worst_error_mm"] = round(worst, 2)
     return summary
@@ -351,6 +362,12 @@ def run_teach_request(params: dict[str, list[str]]) -> dict[str, object]:
     pub = query_str(params, "pub", "") or f"tcp://{host}:{PUB_PORT}"
     cmd = query_str(params, "cmd", "") or f"tcp://{host}:{CMD_PORT}"
     shell = Shell(pub, cmd)
+    if frame := query_str(params, "frame", ""):
+        current = robot.check_frames_served(shell, {frame})["current"]
+        if current != frame:
+            raise ValueError(
+                f"{frame} is not the active frame ({current} is); set it first"
+            )
     if pen_offset:
         robot.check_tip_link(shell)
     x, y, z = robot.pen_tip_position(shell, pen_offset)

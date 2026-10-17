@@ -720,6 +720,108 @@ def test_the_pen_on_the_active_frame_draws_first(monkeypatch, mounted_arm):
     )
 
 
+TOUCH_POINTS = {
+    "target_frame_1": (500.0, 0.0, 10.0),
+    "target_frame_2": (508.0, -6.0, 14.0),
+}
+
+
+def test_each_frame_draws_shifted_by_its_touch_point(monkeypatch, mounted_arm):
+    monkeypatch.setattr(robot, "PenAnnouncer", SilentAnnouncer)
+
+    robot.draw(
+        mounted_arm,
+        TOOL_TABLE + TWO_PENS,
+        MOUNTED_PLACEMENT,
+        0.0,
+        RAPID_MM_MIN,
+        0.0,
+        None,
+        pen_frames=PEN_FRAMES,
+        frame_points=TOUCH_POINTS,
+    )
+
+    within = 2 * robot.SETTLE_TOLERANCE_MM
+    yellow_done = MOUNTED_PLACEMENT.to_paper(mounted_arm.switched_from[1])
+    assert yellow_done == pytest.approx(
+        (10.0, 0.0, 5.0 + robot.FRAME_LIFT_MM), abs=within
+    )
+    black_done = MOUNTED_PLACEMENT.to_paper(mounted_arm.position)
+    assert black_done == pytest.approx(
+        (38.0, 14.0, 9.0 + robot.FRAME_LIFT_MM), abs=within
+    )
+
+
+def test_frame_points_parse_and_give_shifts_from_the_reference_frame():
+    points = robot.parse_frame_points(
+        " target_frame_1=500,0,10 ; target_frame_2 = 508,-6,14;"
+    )
+    assert points == TOUCH_POINTS
+    assert robot.parse_frame_points("") == {}
+    assert robot.frame_shifts(points, {"target_frame_2"}) == {
+        "target_frame_1": (0.0, 0.0, 0.0),
+        "target_frame_2": (8.0, -6.0, 4.0),
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("target_frame_1", "FRAME=X,Y,Z"),
+        ("tool0=1,2,3", "FRAME=X,Y,Z"),
+        ("target_frame_1=1,2", "three numbers"),
+        ("target_frame_1=1,2,nan", "finite"),
+        ("target_frame_1=1,2,3;target_frame_1=1,2,3", "given a point twice"),
+    ],
+)
+def test_bad_frame_points_are_rejected(text, message):
+    with pytest.raises(ValueError, match=message):
+        robot.parse_frame_points(text)
+
+
+@pytest.mark.parametrize(
+    ("points", "message"),
+    [
+        ({"target_frame_2": (0.0, 0.0, 0.0)}, "need target_frame_1's"),
+        ({"target_frame_1": (0.0, 0.0, 0.0)}, "no touch point for target_frame_2"),
+        (
+            {"target_frame_1": (0.0, 0.0, 0.0), "target_frame_2": (40.0, 0.0, 0.0)},
+            "40.0 mm from target_frame_1's",
+        ),
+    ],
+)
+def test_frame_shifts_refuse_points_that_cannot_be_one_point(points, message):
+    with pytest.raises(ValueError, match=message):
+        robot.frame_shifts(points, {"target_frame_2"})
+
+
+def test_shifting_moves_both_kinds_of_placement_in_the_base_frame():
+    shift = (2.0, -3.0, 1.0)
+    corners = robot.corner_placement(MEASURED_CORNERS, z_offset=0.0)
+    for placement in (MOUNTED_PLACEMENT, corners):
+        moved = robot.shifted(placement, shift)
+        point = (40.0, 25.0, 3.0)
+        expected = [
+            b + s / robot.MM_PER_M for b, s in zip(placement.to_base(point), shift)
+        ]
+        assert moved.to_base(point) == pytest.approx(expected)
+        assert moved.to_paper(tuple(expected)) == pytest.approx(point)
+
+
+def test_frame_points_need_pen_frames():
+    with pytest.raises(ValueError, match="go with pen frames"):
+        robot.draw(
+            None,
+            TOOL_TABLE + TWO_PENS,
+            MOUNTED_PLACEMENT,
+            0.0,
+            RAPID_MM_MIN,
+            0.0,
+            None,
+            frame_points=TOUCH_POINTS,
+        )
+
+
 def test_active_first_keeps_the_other_pens_in_order():
     runs = robot.pen_runs(parse(TWO_PENS + TWO_PENS), PEN_FRAMES)
     ordered = robot.active_first(runs, "target_frame_2")

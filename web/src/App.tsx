@@ -44,8 +44,11 @@ import {
 } from "@/lib/gcode-preview"
 import {
   listTargetFrames,
+  loadSavedFramePoints,
   loadSavedPenFrames,
+  serializeFramePoints,
   serializePenFrames,
+  type FramePoints,
   type PenFrames,
   type TargetFrames,
 } from "@/lib/pen-frames"
@@ -279,6 +282,8 @@ export function App() {
   const [targetFrames, setTargetFrames] = useState<TargetFrames | null>(null)
   const [chosenFrame, setChosenFrame] = useState<string>("")
   const [penFrames, setPenFrames] = useState<PenFrames>(loadSavedPenFrames)
+  const [framePoints, setFramePoints] =
+    useState<FramePoints>(loadSavedFramePoints)
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
 
   const [conveyorState, setConveyorState] = useState<ConveyorState | null>(null)
@@ -559,6 +564,10 @@ export function App() {
       }
       if (framesParam) {
         params.set("frames", framesParam)
+        const pointsParam = serializeFramePoints(framePoints)
+        if (pointsParam) {
+          params.set("frame_points", pointsParam)
+        }
       }
       const res = await fetch(`/draw?${params.toString()}`, {
         method: "POST",
@@ -1945,8 +1954,13 @@ export function App() {
         <PenFramesSettings
           pens={pens}
           frames={penFrames}
+          points={framePoints}
           robotHost={robotHost}
-          onSave={setPenFrames}
+          penOffset={penOffset}
+          onSave={(frames, points) => {
+            setPenFrames(frames)
+            setFramePoints(points)
+          }}
           onClose={() => setSettingsOpen(false)}
         />
       )}

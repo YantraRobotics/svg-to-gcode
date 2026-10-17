@@ -5,7 +5,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import accumulate, pairwise
 from pathlib import Path
 
@@ -107,6 +107,11 @@ MAX_CORNER_SKEW_DEG = 15.0
 # is taken to be mistyped.
 MAX_CORNER_TWIST_MM = 20.0
 MIN_PAPER_MM = 10.0
+# Corners and origins are taught at this frame; other frames' touch points are
+# measured from its own.
+REFERENCE_FRAME = "target_frame_1"
+# Touch points further apart than this were not taken at one physical point.
+MAX_FRAME_SHIFT_MM = 30.0
 INVERSE_ITERATIONS = 20
 INVERSE_TOLERANCE_MM = 1e-6
 
@@ -275,6 +280,76 @@ def corner_placement(corners: list[Vec3], z_offset: float) -> CornerPlacement:
         )
     yaw = math.atan2(bottom_right[1] - bottom_left[1], bottom_right[0] - bottom_left[0])
     return CornerPlacement(bottom_left, yaw, z_offset, tuple(corners), (width, height))
+
+
+def shifted(placement: Placement, shift: Vec3) -> Placement:
+    """The placement moved shift mm in the base frame."""
+
+    def moved(point: Vec3) -> Vec3:
+        return tuple(p + s for p, s in zip(point, shift))
+
+    if isinstance(placement, CornerPlacement):
+        return replace(
+            placement,
+            origin=moved(placement.origin),
+            corners=tuple(moved(corner) for corner in placement.corners),
+        )
+    return replace(placement, origin=moved(placement.origin))
+
+
+def parse_frame_points(text: str) -> dict[str, Vec3]:
+    """Touch points (base frame mm) by target frame from FRAME=X,Y,Z;...; empty
+    text gives none."""
+    points = {}
+    for item in filter(None, (part.strip() for part in text.split(";"))):
+        frame, separator, coords = (part.strip() for part in item.partition("="))
+        if not separator or not frame.startswith(TARGET_FRAME_PREFIX):
+            raise ValueError(
+                f"frame points must be FRAME=X,Y,Z separated by ';' with frames "
+                f"starting {TARGET_FRAME_PREFIX!r}, got {item!r}"
+            )
+        try:
+            x, y, z = (float(value) for value in coords.split(","))
+        except ValueError:
+            raise ValueError(
+                f"{frame}'s point must be three numbers X,Y,Z in mm, got {coords!r}"
+            ) from None
+        if not all(math.isfinite(value) for value in (x, y, z)):
+            raise ValueError(f"{frame}'s point must be finite, got {coords!r}")
+        if frame in points:
+            raise ValueError(f"{frame} is given a point twice")
+        points[frame] = (x, y, z)
+    return points
+
+
+def frame_shifts(points: dict[str, Vec3], frames: set[str]) -> dict[str, Vec3]:
+    """How far (mm) each frame's tip reads from REFERENCE_FRAME's with both nibs
+    on one physical point, for the frames given.
+
+    Corners taught at REFERENCE_FRAME put its nib on the paper; another frame's
+    nib lands there once its targets move by its shift.
+    """
+    if REFERENCE_FRAME not in points:
+        raise ValueError(
+            f"frame points need {REFERENCE_FRAME}'s, the frame corners are taught at"
+        )
+    if missing := sorted(frames - set(points)):
+        raise ValueError(
+            f"no touch point for {', '.join(missing)}; touch every drawn frame's "
+            f"nib to the point {REFERENCE_FRAME}'s was"
+        )
+    reference = points[REFERENCE_FRAME]
+    shifts = {}
+    for frame in sorted(frames | {REFERENCE_FRAME}):
+        shift = tuple(p - r for p, r in zip(points[frame], reference))
+        if math.hypot(*shift) > MAX_FRAME_SHIFT_MM:
+            raise ValueError(
+                f"{frame}'s point is {math.hypot(*shift):.1f} mm from "
+                f"{REFERENCE_FRAME}'s (limit {MAX_FRAME_SHIFT_MM:g} mm); touch both "
+                "nibs to the same point"
+            )
+        shifts[frame] = shift
+    return shifts
 
 
 def corner_angles(corners: list[Vec3]) -> list[float]:
@@ -637,19 +712,31 @@ def draw(
     swap_wait: float | None,
     tool: int | None = None,
     pen_frames: dict[str, str] | None = None,
+    frame_points: dict[str, Vec3] | None = None,
 ) -> float:
     """Draw the G-code; returns the largest pen-tip error while drawing (mm).
 
     The pen leans tilt_deg back from its direction of travel; 0 holds the start
     orientation. With pen_frames each pen is selected by its target frame
-    (draw_with_frames); otherwise pen changes wait swap_wait seconds, or for
-    Enter when it is None, and with tool only that tool's strokes are drawn
-    (one_pen) and the arm is held afterwards for the operator to swap pens.
+    (draw_with_frames), shifted by frame_points when given; otherwise pen changes
+    wait swap_wait seconds, or for Enter when it is None, and with tool only
+    that tool's strokes are drawn (one_pen) and the arm is held afterwards for
+    the operator to swap pens.
     """
     if pen_frames:
         return draw_with_frames(
-            shell, text, placement, pen_offset, rapid_feed, tilt_deg, pen_frames, tool
+            shell,
+            text,
+            placement,
+            pen_offset,
+            rapid_feed,
+            tilt_deg,
+            pen_frames,
+            tool,
+            frame_points,
         )
+    if frame_points:
+        raise ValueError("frame points go with pen frames; map the pens to frames")
     steps_to_draw(text, (0.0, 0.0, 0.0), rapid_feed, tool)
     check_not_in_error(shell)
     # With no offset the controller's TCP is the pen tip, whatever link it is on.
@@ -695,6 +782,7 @@ def draw_with_frames(
     tilt_deg: float,
     pen_frames: dict[str, str],
     tool: int | None = None,
+    frame_points: dict[str, Vec3] | None = None,
 ) -> float:
     """Draw each pen at its target frame; returns the largest pen-tip error (mm).
 
@@ -702,9 +790,13 @@ def draw_with_frames(
     rises FRAME_LIFT_MM straight up in the base frame after its last stroke;
     the next pen's frame then becomes the tip, wrist 3 turning its nib onto the
     previous one's (switch_frame), and it approaches its strokes from there.
-    pen_offset reaches beyond every frame along its +X.
+    pen_offset reaches beyond every frame along its +X. With frame_points, each
+    frame draws on the placement moved by its frame_shifts.
     """
     runs = pen_runs(parse_gcode(text, (0.0, 0.0, 0.0), rapid_feed), pen_frames, tool)
+    shifts = (
+        frame_shifts(frame_points, {run.frame for run in runs}) if frame_points else {}
+    )
     check_not_in_error(shell)
     active = check_frames_served(shell, {run.frame for run in runs})["current"]
     runs = active_first(runs, active)
@@ -723,6 +815,9 @@ def draw_with_frames(
                         raise DrawError(
                             "could not bring the controller back to world_twist"
                         )
+                plotter.placement = shifted(
+                    placement, shifts.get(run.frame, (0.0, 0.0, 0.0))
+                )
                 announcer.announce(run.pen)
                 worst = max(worst, plotter.draw_run(run, rapid_feed, tilt_deg))
                 plotter.rise(FRAME_LIFT_MM, rapid_feed)

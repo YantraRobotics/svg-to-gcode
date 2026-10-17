@@ -2,6 +2,7 @@ import io
 import json
 import threading
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import pytest
@@ -110,6 +111,32 @@ def test_dry_run_checks_every_drawn_pen_has_a_frame(base_url):
         "black pen (T1) has no target frame"
         in json.loads(exc_info.value.read())["error"]
     )
+
+
+def test_dry_run_reports_each_drawn_frames_shift(base_url):
+    gcode_text = "G21\nG90\n; T1 black #231F20\nG0 Z5\nT1 M6\nG0 X1\nG1 Z0 F600\n"
+    gcode_text += "G1 X9 F1000\nG0 Z5\nM2\n"
+    url = f"{base_url}/draw?origin=-125,-460,30.6&dry_run=true&tilt=0"
+    points = quote("target_frame_1=500,0,10;target_frame_2=502,-3,11")
+
+    framed = Request(
+        f"{url}&frames=black=target_frame_2&frame_points={points}",
+        data=gcode_text.encode(),
+        method="POST",
+    )
+    with urlopen(framed) as response:
+        assert json.loads(response.read())["frame_shifts_mm"] == {
+            "target_frame_1": [0.0, 0.0, 0.0],
+            "target_frame_2": [2.0, -3.0, 1.0],
+        }
+
+    unframed = Request(
+        f"{url}&frame_points={points}", data=gcode_text.encode(), method="POST"
+    )
+    with pytest.raises(HTTPError) as exc_info:
+        urlopen(unframed)
+    assert exc_info.value.code == 400
+    assert "go with frames" in json.loads(exc_info.value.read())["error"]
 
 
 def test_invalid_requests_return_400(base_url):
