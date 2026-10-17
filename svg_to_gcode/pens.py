@@ -1,13 +1,15 @@
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from itertools import combinations
+from itertools import combinations, product
 
 import numpy as np
 
 type RGB = tuple[int, int, int]
 
 DEFAULT_PENS = "yellow=#FFF200,cyan=#00AEEF,magenta=#EC008C,black=#231F20"
+MIN_NIB_MM = 0.1
 PAPER_RGB: RGB = (255, 255, 255)
 CHANNEL_MAX = 255.0
 PEN_NAME = re.compile(r"[A-Za-z0-9_-]+")
@@ -49,6 +51,7 @@ INK_COST = 0.03
 class Pen:
     name: str
     rgb: RGB
+    nib_mm: float | None = None
 
     @property
     def hex(self) -> str:
@@ -61,11 +64,24 @@ def parse_hex(text: str) -> RGB:
     return int(text[1:3], 16), int(text[3:5], 16), int(text[5:7], 16)
 
 
+def parse_nib(text: str) -> float:
+    cleaned = text.strip().removesuffix("mm").strip()
+    try:
+        value = float(cleaned)
+    except ValueError:
+        raise ValueError(f"nib size must be a number in mm, got {text!r}") from None
+    if not (MIN_NIB_MM <= value < math.inf):
+        raise ValueError(
+            f"nib size must be at least {MIN_NIB_MM:g} mm and finite, got {text!r}"
+        )
+    return value
+
+
 def parse_pens(text: str) -> list[Pen]:
-    """Pens from NAME=#RRGGBB,... sorted light to dark, the order they draw in."""
+    """Pens from NAME=#RRGGBB[:NIB_MM],... sorted light to dark, the order they draw in."""
     pens = []
     for item in text.split(","):
-        name, separator, color = (part.strip() for part in item.partition("="))
+        name, separator, spec = (part.strip() for part in item.partition("="))
         if not separator:
             raise ValueError(
                 f"pens must be NAME=#RRGGBB separated by commas, got {item!r}"
@@ -74,7 +90,9 @@ def parse_pens(text: str) -> list[Pen]:
             raise ValueError(
                 f"pen name {name!r} must be letters, digits, '-' or '_' with no spaces"
             )
-        pens.append(Pen(name, parse_hex(color)))
+        color, nib_sep, nib_text = (part.strip() for part in spec.partition(":"))
+        nib_mm = parse_nib(nib_text) if nib_sep else None
+        pens.append(Pen(name, parse_hex(color), nib_mm))
     names = [pen.name for pen in pens]
     if duplicates := sorted({name for name in names if names.count(name) > 1}):
         raise ValueError(f"pen names must be unique, got {', '.join(duplicates)} twice")
@@ -93,7 +111,12 @@ def to_linear(rgb: np.ndarray) -> np.ndarray:
 
 def to_lab(rgb: np.ndarray) -> np.ndarray:
     """CIE L*a*b* (D65) of sRGB colours with 0-255 channels, shape (..., 3)."""
-    xyz = to_linear(rgb) @ SRGB_TO_XYZ.T / D65_WHITE
+    return linear_to_lab(to_linear(rgb))
+
+
+def linear_to_lab(linear: np.ndarray) -> np.ndarray:
+    """CIE L*a*b* (D65) of linear sRGB light 0..1, shape (..., 3)."""
+    xyz = np.asarray(linear, dtype=float) @ SRGB_TO_XYZ.T / D65_WHITE
     f = np.where(xyz > LAB_EPSILON, np.cbrt(xyz), (LAB_KAPPA * xyz + 16) / 116)
     lightness = 116 * f[..., 1] - 16
     return np.stack(
@@ -104,9 +127,29 @@ def to_lab(rgb: np.ndarray) -> np.ndarray:
 
 def nearest_index(rgb: np.ndarray, pens: list[Pen]) -> np.ndarray:
     """Per colour, 0 when paper white is nearest in Lab, else 1 + the nearest pen's index."""
+    return nearest_lab_index(to_lab(rgb), pens)
+
+
+def nearest_lab_index(lab: np.ndarray, pens: list[Pen]) -> np.ndarray:
+    """nearest_index for colours already in CIE L*a*b*, shape (..., 3)."""
     inks = to_lab(np.array([PAPER_RGB, *(pen.rgb for pen in pens)]))
-    distances = np.linalg.norm(to_lab(rgb)[..., np.newaxis, :] - inks, axis=-1)
+    distances = np.linalg.norm(lab[..., np.newaxis, :] - inks, axis=-1)
     return np.argmin(distances, axis=-1)
+
+
+def coverage_mixes(
+    pens: list[Pen], levels: Sequence[float]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Every way of covering the paper with each pen at one of levels, shape
+    (mixes, pens), and the colour (CIE L*a*b*) each leaves, shape (mixes, 3).
+
+    Hatches of different pens cross, so in linear light the paper reflects, channel
+    by channel, the product over the pens of 1 - coverage * (1 - pen reflectance).
+    """
+    mixes = np.array(list(product(levels, repeat=len(pens))), dtype=float)
+    absorbed = 1.0 - to_linear(np.array([pen.rgb for pen in pens]))
+    reflected = np.prod(1.0 - mixes[..., np.newaxis] * absorbed, axis=1)
+    return mixes, linear_to_lab(reflected)
 
 
 def blends(pens: list[Pen], most: int) -> list[tuple[Pen, ...]]:

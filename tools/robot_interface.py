@@ -35,6 +35,11 @@ TYPE_SET_JOINT_POSITIONS = 0x1F
 TYPE_REPLY = 0x20
 TYPE_MODEL = 0x21
 TYPE_ASSET = 0x22
+TYPE_GET_TARGET_FRAME = 0x23
+TYPE_TARGET_FRAME = 0x24
+TYPE_SET_TARGET_FRAME = 0x25
+# Only URDF links named like this can be the controlled tip.
+TARGET_FRAME_PREFIX = "target_frame"
 # Planner frames: answered by the planner binary; a bare controller
 # replies UNSUPPORTED ("planner frame: no planner in this server").
 TYPE_SET_JOINT_TARGET = 0x30
@@ -42,6 +47,8 @@ TYPE_SET_POSE_TARGET = 0x31
 TYPE_CANCEL_TARGET = 0x32
 TYPE_GET_PLANNER_STATUS = 0x33
 TYPE_PLANNER_STATUS = 0x34
+TYPE_SET_JOINT_TRAJECTORY = 0x35
+MAX_TRAJECTORY_WAYPOINTS = 4096
 
 EVENTS = {
     "power_on": 1,
@@ -236,6 +243,40 @@ def parse_model(data: bytes):
     return {"base_link": base_link, "tip_link": tip_link, "urdf_xml": urdf}
 
 
+def encode_get_target_frame() -> bytes:
+    """Ask for the current and eligible tips (answered with TARGET_FRAME)."""
+    return struct.pack("<3B", MAGIC, VERSION, TYPE_GET_TARGET_FRAME)
+
+
+def parse_target_frame(data: bytes):
+    """TARGET_FRAME frame -> dict(current, eligible list), or None."""
+    if len(data) < 6:
+        return None
+    magic, version, ftype = struct.unpack_from("<3B", data)
+    if magic != MAGIC or version != VERSION or ftype != TYPE_TARGET_FRAME:
+        return None
+    try:
+        pos = 3
+        n = struct.unpack_from("<H", data, pos)[0]; pos += 2
+        current = data[pos:pos + n].decode(); pos += n
+        count = data[pos]; pos += 1
+        eligible = []
+        for _ in range(count):
+            n = struct.unpack_from("<H", data, pos)[0]; pos += 2
+            eligible.append(data[pos:pos + n].decode()); pos += n
+    except (struct.error, IndexError, UnicodeDecodeError):
+        return None
+    if pos != len(data):
+        return None
+    return {"current": current, "eligible": eligible}
+
+
+def encode_set_target_frame(name: str) -> bytes:
+    """Switch the controlled tip to a target_frame* link (answered with REPLY)."""
+    raw = name.encode()
+    return struct.pack("<3BH", MAGIC, VERSION, TYPE_SET_TARGET_FRAME, len(raw)) + raw
+
+
 def encode_get_asset(name: str) -> bytes:
     """Ask for one URDF-referenced file (answered with an ASSET frame)."""
     raw = name.encode()
@@ -267,6 +308,29 @@ def encode_joint_target(q) -> bytes:
 def encode_pose_target(pose) -> bytes:
     """Planner: Cartesian target (execution pending singularity handling)."""
     return struct.pack("<3B7d", MAGIC, VERSION, TYPE_SET_POSE_TARGET, *pose)
+
+
+def encode_joint_trajectory(waypoints, times=None, speed_scale: float = 1.0) -> bytes:
+    """Planner: follow joint waypoints (rad, URDF order) continuously.
+
+    Without ``times`` the planner fits a smooth path through the points and
+    times it at its own limits; with ``times`` (seconds from the start, one
+    per waypoint, strictly increasing) it follows that timing, stretched
+    only if it would exceed the limits. ``speed_scale`` in (0, 1] slows
+    either. The first waypoint must be (near) the current configuration.
+    """
+    rows = [tuple(float(v) for v in q) for q in waypoints]
+    if not 1 <= len(rows) <= MAX_TRAJECTORY_WAYPOINTS:
+        raise ValueError(f"1..{MAX_TRAJECTORY_WAYPOINTS} waypoints required")
+    if any(len(q) != 6 for q in rows):
+        raise ValueError("each waypoint needs 6 joint values")
+    if times is not None and len(times) != len(rows):
+        raise ValueError("one time per waypoint required")
+    out = [struct.pack("<3BHBd", MAGIC, VERSION, TYPE_SET_JOINT_TRAJECTORY,
+                       len(rows), 1 if times is not None else 0, float(speed_scale))]
+    for i, q in enumerate(rows):
+        out.append(struct.pack("<7d", float(times[i]) if times is not None else 0.0, *q))
+    return b"".join(out)
 
 
 def encode_cancel_target() -> bytes:
@@ -406,6 +470,18 @@ class Shell:
               + (f" ({reply['message']})" if reply["message"] else ""))
         return reply["status"] == 0
 
+    def send_joint_trajectory(self, waypoints, times=None, speed_scale: float = 1.0,
+                              quiet: bool = False):
+        """Planner waypoint follower; the REPLY dict, or None (no reply)."""
+        reply = self.request(encode_joint_trajectory(waypoints, times, speed_scale))
+        if not quiet:
+            if reply is None:
+                print("trajectory: NO REPLY")
+            else:
+                print(f"trajectory: {REPLY_STATUS.get(reply['status'])}"
+                      + (f" ({reply['message']})" if reply["message"] else ""))
+        return reply
+
     def send_cancel_target(self):
         reply = self.request(encode_cancel_target())
         if reply is None:
@@ -431,6 +507,33 @@ class Shell:
             print(f"pstatus: {REPLY_STATUS.get(reply['status'])}"
                   + (f" ({reply['message']})" if reply["message"] else ""))
         return None
+
+    def get_target_frame(self):
+        """dict(current, eligible), or None (old server / no reply)."""
+        self.req.send(encode_get_target_frame())
+        try:
+            data = self.req.recv()
+        except zmq.error.Again:
+            print("tip: NO REPLY")
+            return None
+        tips = parse_target_frame(data)
+        if tips is not None:
+            return tips
+        reply = parse_reply(data)
+        if reply is not None:
+            print(f"tip: {REPLY_STATUS.get(reply['status'])}"
+                  + (f" ({reply['message']})" if reply["message"] else ""))
+        return None
+
+    def set_target_frame(self, name: str):
+        """Switch the controlled tip; the arm must be stationary."""
+        reply = self.request(encode_set_target_frame(name))
+        if reply is None:
+            print(f"tip {name}: NO REPLY")
+            return False
+        print(f"tip {name}: {REPLY_STATUS.get(reply['status'])}"
+              + (f" ({reply['message']})" if reply["message"] else ""))
+        return reply["status"] == 0
 
     def send_move_to_safe(self):
         """Sequence run/jv-switch/P-converge to the controller's safe pose."""

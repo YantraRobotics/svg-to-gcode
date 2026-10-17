@@ -77,6 +77,21 @@ def test_overlaid_inks_multiply(names, expected):
     assert mixed == pens.Pen("+".join(names), expected)
 
 
+def test_coverage_mixes_shade_from_paper_through_each_pen_to_their_overlay():
+    yellow, *_, black = CMYK
+    mixes, lab = pens.coverage_mixes([yellow, black], (0.0, 0.5, 1.0))
+    colour = {tuple(mix): mix_lab for mix, mix_lab in zip(mixes, lab)}
+
+    assert len(mixes) == 9
+    assert colour[0.0, 0.0] == pytest.approx(pens.to_lab(np.array(pens.PAPER_RGB)))
+    assert colour[1.0, 0.0] == pytest.approx(pens.to_lab(np.array(yellow.rgb)))
+    assert colour[1.0, 1.0] == pytest.approx(
+        pens.to_lab(np.array(pens.overlay([yellow, black]).rgb)), abs=0.5
+    )
+    lightness = [colour[0.0, level][0] for level in (0.0, 0.5, 1.0)]
+    assert lightness == sorted(lightness, reverse=True)
+
+
 def test_ink_coverage_leaves_paper_bare_and_finds_pens_and_their_mixes():
     yellow, cyan, magenta, _ = CMYK
     colours = [
@@ -125,3 +140,9 @@ def test_black_stands_in_for_the_other_pens_in_greys():
 def test_parse_pens_rejects_bad_input(text, message):
     with pytest.raises(ValueError, match=message):
         pens.parse_pens(text)
+
+
+def test_parse_pens_accepts_optional_nib_size_in_mm():
+    parsed = pens.parse_pens("fine=#231F20:0.4,marker=#D52B1E:2.0mm")
+    by_name = {pen.name: pen.nib_mm for pen in parsed}
+    assert by_name == {"fine": 0.4, "marker": 2.0}

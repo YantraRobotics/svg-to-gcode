@@ -7,9 +7,10 @@ from collections.abc import Callable
 from pathlib import Path
 from xml.etree.ElementTree import ParseError
 
+import conveyor as conveyor_tool
 import prepare_owl69_model
 from robot_interface import Shell, add_endpoint_arguments, resolve_endpoints
-from svg_to_gcode import gcode, image, pens, robot, viewer
+from svg_to_gcode import gcode, image, pens, robot, server, viewer
 
 CORNER_METAVARS = tuple(
     f"{corner}{axis}" for corner in ("BL", "BR", "TR", "TL") for axis in "XYZ"
@@ -69,6 +70,15 @@ def non_negative_int(text: str) -> int:
     return value
 
 
+def port_number(text: str) -> int:
+    value = int(text)
+    if not server.MIN_PORT <= value <= server.MAX_PORT:
+        raise argparse.ArgumentTypeError(
+            f"{text} must be between {server.MIN_PORT} and {server.MAX_PORT}"
+        )
+    return value
+
+
 def odd_size(text: str) -> int:
     value = positive_int(text)
     if value % 2 == 0:
@@ -95,6 +105,20 @@ def paper_size(text: str) -> tuple[float, float]:
 def pen_set(text: str) -> list[pens.Pen]:
     try:
         return pens.parse_pens(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def pen_frame_map(text: str) -> dict[str, str]:
+    try:
+        return robot.parse_pen_frames(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def frame_point_map(text: str) -> dict[str, tuple[float, float, float]]:
+    try:
+        return robot.parse_frame_points(text)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from None
 
@@ -179,6 +203,22 @@ def run_draw(args: argparse.Namespace) -> int:
     if args.tool is not None:
         pen = robot.tool_table(text).get(args.tool)
         print(f"drawing only T{args.tool}" + (f" {pen.name} {pen.hex}" if pen else ""))
+    if args.frame_points and not args.pen_frames:
+        raise ValueError("--frame-points goes with --pen-frames")
+    if args.pen_frames:
+        steps = robot.parse_gcode(text, (0.0, 0.0, 0.0), args.rapid)
+        runs = robot.pen_runs(steps, args.pen_frames, args.tool)
+        shifts = (
+            robot.frame_shifts(args.frame_points, {run.frame for run in runs})
+            if args.frame_points
+            else {}
+        )
+        for run in runs:
+            shift = shifts.get(run.frame)
+            moved = (
+                " shifted {:+.2f}, {:+.2f}, {:+.2f} mm".format(*shift) if shift else ""
+            )
+            print(f"T{run.tool} {run.pen.name} draws at {run.frame}{moved}")
     if args.dry_run:
         # The arm's start pose is unknown offline, so begin at the first XY travel.
         steps = robot.parse_gcode(text, (0.0, 0.0, 0.0), args.rapid)
@@ -207,6 +247,8 @@ def run_draw(args: argparse.Namespace) -> int:
         args.tilt,
         args.swap_wait,
         args.tool,
+        args.pen_frames,
+        args.frame_points,
     )
     print(f"done; largest pen-tip error while drawing {worst:.2f} mm")
     return 0
@@ -277,11 +319,43 @@ def run_storyboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_serve(args: argparse.Namespace) -> int:
+    port = getattr(args, "port_flag", None) or getattr(args, "port", None)
+    if port is None:
+        raise ValueError("pass a port number, e.g. serve 8000 or --port 8000")
+    return server.serve(args.bind, port)
+
+
+def run_conveyor(args: argparse.Namespace) -> int:
+    with conveyor_tool.Conveyor(args.serial_port, args.baud) as conv:
+        if args.test:
+            return 0 if conveyor_tool.self_test(conv) else 1
+        if args.commands:
+            return (
+                0
+                if all(conveyor_tool.run_command(conv, cmd) for cmd in args.commands)
+                else 1
+            )
+        conveyor_tool.interactive(conv)
+        return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Draw SVG images on paper with the Owl 6.9 arm."
     )
-    commands = parser.add_subparsers(required=True)
+    parser.add_argument(
+        "--port",
+        "-p",
+        type=port_number,
+        help="run the HTTP conversion server on this TCP port",
+    )
+    parser.add_argument(
+        "--bind",
+        default=server.DEFAULT_BIND_HOST,
+        help=f"address to bind when serving (default {server.DEFAULT_BIND_HOST})",
+    )
+    commands = parser.add_subparsers(dest="command")
 
     paper = argparse.ArgumentParser(add_help=False)
     paper.add_argument(
@@ -379,7 +453,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     to_gcode.add_argument("--feed", type=feed_rate, default=1500.0, help="mm/min")
     to_gcode.add_argument(
-        "--lift", type=positive, default=5.0, help="pen-up height above the paper, mm"
+        "--lift", type=positive, default=50.0, help="pen-up height above the paper, mm"
     )
     to_gcode.add_argument(
         "--hatch",
@@ -475,6 +549,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="draw only this tool's strokes, with its pen already in the gripper: no "
         f"pen change, and the arm ends held {robot.PEN_CHANGE_HEIGHT_MM:g} mm above "
         "the paper for the next swap",
+    )
+    draw.add_argument(
+        "--pen-frames",
+        type=pen_frame_map,
+        metavar="NAME=FRAME,...",
+        help="the controller target frame each mounted pen's tip is, e.g. "
+        "red=target_frame_1,green=target_frame_2; the active frame's pen draws "
+        f"first, each pen ends {robot.FRAME_LIFT_MM:g} mm higher, and pen changes "
+        "then switch frames, turning wrist 3 onto the last nib, instead of swapping",
+    )
+    draw.add_argument(
+        "--frame-points",
+        type=frame_point_map,
+        metavar="FRAME=X,Y,Z;...",
+        help="the tip each target frame reports, base frame mm, with its nib on one "
+        f"shared point; {robot.REFERENCE_FRAME}, which the corners or origin are "
+        "taught at, is needed, and every other frame draws shifted by how far its "
+        "point is from that one's",
     )
     draw.add_argument(
         "--dry-run",
@@ -668,14 +760,69 @@ def build_parser() -> argparse.ArgumentParser:
         help="estimated manual swap time per pen load",
     )
     storyboard.set_defaults(handler=run_storyboard)
+
+    serve = commands.add_parser(
+        "serve",
+        help="run an HTTP server for image-to-SVG, SVG-to-G-code, and robot drawing",
+    )
+    serve.add_argument(
+        "port", nargs="?", type=port_number, help="TCP port to listen on"
+    )
+    serve.add_argument(
+        "--port",
+        "-p",
+        dest="port_flag",
+        type=port_number,
+        help="TCP port to listen on",
+    )
+    serve.add_argument(
+        "--bind",
+        default=server.DEFAULT_BIND_HOST,
+        help=f"address to bind (default {server.DEFAULT_BIND_HOST})",
+    )
+    serve.set_defaults(handler=run_serve)
+
+    conveyor_cmd = commands.add_parser(
+        "conveyor",
+        help="control the ESP32 conveyor over UART (start, stop, fwd, rev, status)",
+    )
+    conveyor_cmd.add_argument(
+        "commands",
+        nargs="*",
+        help="commands to send in order; omit for interactive mode",
+    )
+    conveyor_cmd.add_argument(
+        "--serial-port",
+        "-s",
+        help="serial port (auto-detected if omitted)",
+    )
+    conveyor_cmd.add_argument(
+        "--baud",
+        "-b",
+        type=positive_int,
+        default=conveyor_tool.DEFAULT_BAUD,
+        help=f"UART baud rate (default {conveyor_tool.DEFAULT_BAUD})",
+    )
+    conveyor_cmd.add_argument(
+        "--test",
+        action="store_true",
+        help="run the motor through every command and verify replies",
+    )
+    conveyor_cmd.set_defaults(handler=run_conveyor)
     return parser
 
 
 def main() -> int:
     logging.basicConfig(format="%(levelname)s: %(message)s")
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    handler = getattr(args, "handler", None)
+    if handler is None:
+        if args.port is None:
+            parser.error("a command or --port is required")
+        handler = run_serve
     try:
-        return args.handler(args)
+        return handler(args)
     except (OSError, ParseError, RuntimeError, ValueError, robot.DrawError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

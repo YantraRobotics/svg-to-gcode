@@ -139,6 +139,24 @@ def test_each_pen_hatches_at_its_own_angle(tmp_path):
     assert directions(magenta) == {135.0}
 
 
+def test_a_fills_opacity_hatches_its_pen_that_much_sparser(tmp_path):
+    def hatch_lines(opacity: str) -> list[gcode.Stroke]:
+        (layer,) = layers_for(
+            tmp_path,
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            f'<rect width="10" height="10" fill="#EC008C" fill-opacity="{opacity}"/>'
+            "</svg>",
+        )
+        assert layer.pen.name == "magenta"
+        return layer.strokes
+
+    solid, half = hatch_lines("1"), hatch_lines("0.5")
+
+    assert any(len(stroke) > 2 for stroke in solid), "solid fills are outlined"
+    assert all(len(stroke) == 2 for stroke in half), "partial fills are not"
+    assert len(half) == pytest.approx((len(solid) - 1) / 2, abs=1)
+
+
 def test_open_subpaths_fill_as_if_closed(tmp_path):
     (layer,) = layers_for(tmp_path, OPEN_TRIANGLE_SVG, paper=(30.0, 30.0))
     (outline,) = [stroke for stroke in layer.strokes if len(stroke) > 2]
@@ -182,6 +200,21 @@ def test_pen_stays_down_into_a_stroke_that_starts_where_the_last_ended():
     ]
     assert text.count("G1 Z0.000") == 2
     assert inked == [2, 1]
+
+
+def test_high_lift_rapids_down_to_the_approach_height_before_plunging():
+    high_lift_mm = 50.0
+    strokes = [[(0.0, 0.0), (10.0, 0.0)], [(20.0, 0.0), (30.0, 0.0)]]
+    text = gcode.to_gcode([gcode.Layer(1, CMYK[3], strokes)], FEED_MM_MIN, high_lift_mm)
+
+    steps = robot.parse_gcode(text, (0.0, 0.0, high_lift_mm), RAPID_MM_MIN)
+    moves = [step for step in steps if isinstance(step, robot.Move)]
+    second_stroke = moves.index(next(m for m in moves if m.end == (20.0, 0.0, 0.0)))
+    lift, travel, approach, plunge = moves[second_stroke - 3 : second_stroke + 1]
+    assert lift.end == (10.0, 0.0, high_lift_mm) and lift.rapid
+    assert travel.end == (20.0, 0.0, high_lift_mm) and travel.rapid
+    assert approach.end == (20.0, 0.0, gcode.APPROACH_MM) and approach.rapid
+    assert plunge.feed == gcode.PLUNGE_FEED_MM_MIN and not plunge.rapid
 
 
 def test_fills_without_hatch_or_outline_draw_nothing(tmp_path):

@@ -9,6 +9,7 @@ dependencies = [
     "mujoco>=3.15.0",
     "numpy>=2.5.3",
     "pillow>=12.3.0",
+    "pyserial>=3.5",
     "pyzmq>=27.2.0",
     "scipy>=1.18.1",
     "svgelements>=1.9.6",
@@ -34,4 +35,4 @@ dev-mode-dirs = [".", "tools"]
 [tool.ruff]
 src = [".", "tools"]
 # Verbatim copies of control/tools; keep them diffable against upstream.
-extend-exclude = ["robot_interface.py", "motion.py", "prepare_owl69_model.py"]
+extend-exclude = ["robot_interface.py", "motion.py", "prepare_owl69_model.py", "conveyor.py"]

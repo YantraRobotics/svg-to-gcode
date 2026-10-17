@@ -25,3 +25,11 @@ owl69_mjcf/
 
 # Generated drawings, G-code, previews and timelapses
 output/
+
+# Web app dependencies
+web/node_modules/
+
+# run.sh background server
+server.log
+server.pid
+
