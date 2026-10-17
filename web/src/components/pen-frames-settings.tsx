@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { Crosshair, RefreshCw, X } from "lucide-react"
+import { RefreshCw, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -12,14 +12,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  DEFAULT_TOUCH_FRAMES,
-  FRAME_POINTS_STORAGE_KEY,
-  frameShift,
   listTargetFrames,
   PEN_FRAMES_STORAGE_KEY,
-  REFERENCE_FRAME,
-  type FramePoint,
-  type FramePoints,
   type PenFrames,
   type TargetFrames,
 } from "@/lib/pen-frames"
@@ -30,67 +24,22 @@ const MANUAL_SWAP = "__manual__"
 interface PenFramesSettingsProps {
   pens: { name: string; hex: string }[]
   frames: PenFrames
-  points: FramePoints
   robotHost: string
-  penOffset: string
-  onSave: (frames: PenFrames, points: FramePoints) => void
+  onSave: (frames: PenFrames) => void
   onClose: () => void
 }
-
-const EMPTY_POINT: FramePoint = ["", "", ""]
 
 export function PenFramesSettings({
   pens,
   frames,
-  points,
   robotHost,
-  penOffset,
   onSave,
   onClose,
 }: PenFramesSettingsProps) {
   const [draft, setDraft] = useState<PenFrames>(frames)
-  const [pointsDraft, setPointsDraft] = useState<FramePoints>(points)
   const [served, setServed] = useState<TargetFrames | null>(null)
   const [loading, setLoading] = useState<boolean>(true)
   const [error, setError] = useState<string | null>(null)
-  const [teaching, setTeaching] = useState<string | null>(null)
-  const touchFrames = served?.eligible.length
-    ? served.eligible
-    : DEFAULT_TOUCH_FRAMES
-
-  const setPointAxis = (frame: string, axis: 0 | 1 | 2, value: string) => {
-    setPointsDraft((prev) => {
-      const next: FramePoint = [...(prev[frame] ?? EMPTY_POINT)]
-      next[axis] = value
-      return { ...prev, [frame]: next }
-    })
-  }
-
-  const teachPoint = async (frame: string) => {
-    setTeaching(frame)
-    setError(null)
-    try {
-      const params = new URLSearchParams({
-        pen_offset: penOffset,
-        host: robotHost,
-        frame,
-      })
-      const res = await fetch(`/teach?${params.toString()}`, { method: "POST" })
-      const payload = await res.json()
-      if (!res.ok) {
-        throw new Error(payload.error || "Teach failed")
-      }
-      const [x, y, z] = payload.origin as [number, number, number]
-      setPointsDraft((prev) => ({
-        ...prev,
-        [frame]: [String(x), String(y), String(z)],
-      }))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setTeaching(null)
-    }
-  }
 
   const fetchFrames = useCallback(
     () =>
@@ -131,14 +80,10 @@ export function PenFramesSettings({
     )
     try {
       window.localStorage.setItem(PEN_FRAMES_STORAGE_KEY, JSON.stringify(cleaned))
-      window.localStorage.setItem(
-        FRAME_POINTS_STORAGE_KEY,
-        JSON.stringify(pointsDraft)
-      )
     } catch {
       // the mapping still applies for this session
     }
-    onSave(cleaned, pointsDraft)
+    onSave(cleaned)
     onClose()
   }
 
@@ -244,57 +189,6 @@ export function PenFramesSettings({
                       placeholder="target_frame_1"
                       className="h-7 font-mono text-[11px]"
                     />
-                  )}
-                </div>
-              )
-            })}
-          </div>
-
-          <div className="space-y-1.5">
-            <Label className="text-[11px] text-[#6B6661]">
-              Touch points X, Y, Z (mm)
-            </Label>
-            <p className="text-[11px] text-[#6B6661]">
-              Set each frame active and touch its nib to the same physical
-              point, then teach it. Corners are taught at {REFERENCE_FRAME}; the
-              other frames draw shifted by how far their point reads from its.
-              Leave all empty to draw unshifted.
-            </p>
-            {touchFrames.map((frame) => {
-              const point = pointsDraft[frame] ?? EMPTY_POINT
-              const shift =
-                frame === REFERENCE_FRAME ? null : frameShift(pointsDraft, frame)
-              return (
-                <div key={frame} className="space-y-0.5">
-                  <div className="grid grid-cols-[96px_1fr_1fr_1fr_24px] items-center gap-1">
-                    <span className="truncate text-[11px] font-mono">
-                      {frame}
-                    </span>
-                    {([0, 1, 2] as const).map((axis) => (
-                      <Input
-                        key={axis}
-                        value={point[axis]}
-                        onChange={(e) => setPointAxis(frame, axis, e.target.value)}
-                        className="h-6 px-1.5 font-mono text-[11px]"
-                      />
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => void teachPoint(frame)}
-                      disabled={teaching !== null}
-                      title={`Teach ${frame} from the arm (it must be the active frame)`}
-                      className="h-6 w-6 inline-flex items-center justify-center rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/60 text-[#006699] hover:border-[#006699] cursor-pointer disabled:opacity-40"
-                    >
-                      <Crosshair
-                        className={`h-3 w-3 ${teaching === frame ? "animate-pulse" : ""}`}
-                      />
-                    </button>
-                  </div>
-                  {shift && (
-                    <div className="pl-[100px] text-[10px] font-mono text-[#6B6661]">
-                      shift{" "}
-                      {shift.map((value) => value.toFixed(2)).join(", ")} mm
-                    </div>
                   )}
                 </div>
               )

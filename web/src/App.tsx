@@ -43,11 +43,16 @@ import {
   parsePaperMm,
 } from "@/lib/gcode-preview"
 import {
+  DEFAULT_TOUCH_FRAMES,
+  FRAME_POINTS_STORAGE_KEY,
+  frameShift,
   listTargetFrames,
   loadSavedFramePoints,
   loadSavedPenFrames,
+  REFERENCE_FRAME,
   serializeFramePoints,
   serializePenFrames,
+  type FramePoint,
   type FramePoints,
   type PenFrames,
   type TargetFrames,
@@ -288,6 +293,7 @@ export function App() {
   const [penFrames, setPenFrames] = useState<PenFrames>(loadSavedPenFrames)
   const [framePoints, setFramePoints] =
     useState<FramePoints>(loadSavedFramePoints)
+  const [framePointsSaved, setFramePointsSaved] = useState<boolean>(false)
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
 
   const [conveyorState, setConveyorState] = useState<ConveyorState | null>(null)
@@ -605,11 +611,16 @@ export function App() {
     }
   }
 
-  const fetchTaughtPoint = async (): Promise<[string, string, string]> => {
+  const fetchTaughtPoint = async (
+    frame?: string
+  ): Promise<[string, string, string]> => {
     const params = new URLSearchParams({
       pen_offset: penOffset,
       host: robotHost,
     })
+    if (frame) {
+      params.set("frame", frame)
+    }
     const res = await fetch(`/teach?${params.toString()}`, { method: "POST" })
     const payload = await res.json()
     if (!res.ok) {
@@ -730,6 +741,40 @@ export function App() {
       setErrorMessage(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(null)
+    }
+  }
+
+  const updateFramePoint = (frame: string, axisIndex: 0 | 1 | 2, value: string) => {
+    setFramePoints((prev) => {
+      const next: FramePoint = [...(prev[frame] ?? ["", "", ""])]
+      next[axisIndex] = value
+      return { ...prev, [frame]: next }
+    })
+  }
+
+  const handleTeachFramePoint = async (frame: string) => {
+    setBusy(`Teaching ${frame}...`)
+    setErrorMessage(null)
+    try {
+      const coords = await fetchTaughtPoint(frame)
+      setFramePoints((prev) => ({ ...prev, [frame]: coords }))
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleSaveFramePoints = () => {
+    try {
+      window.localStorage.setItem(
+        FRAME_POINTS_STORAGE_KEY,
+        JSON.stringify(framePoints)
+      )
+      setFramePointsSaved(true)
+      window.setTimeout(() => setFramePointsSaved(false), 1800)
+    } catch {
+      setErrorMessage("Could not save the touch points in this browser")
     }
   }
 
@@ -1718,6 +1763,76 @@ export function App() {
                 </div>
               )}
 
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span
+                    className="text-[11px] text-[#6B6661]"
+                    title={`Each frame's tip with its nib on one shared point. Corners are taught at ${REFERENCE_FRAME}; the other frames draw shifted by how far theirs reads from it. Leave empty to draw unshifted.`}
+                  >
+                    Pen touch points X, Y, Z (mm)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleSaveFramePoints}
+                    className="inline-flex items-center gap-0.5 text-[11px] text-[#006699] hover:underline cursor-pointer"
+                  >
+                    {framePointsSaved ? (
+                      <>
+                        <Check className="h-3 w-3 text-[#00843D]" />
+                        <span className="text-[#00843D]">Saved</span>
+                      </>
+                    ) : (
+                      <>
+                        <Save className="h-3 w-3" />
+                        <span>Save</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+                {DEFAULT_TOUCH_FRAMES.map((frame) => {
+                  const shift =
+                    frame === REFERENCE_FRAME
+                      ? null
+                      : frameShift(framePoints, frame)
+                  return (
+                    <div key={frame} className="space-y-0.5">
+                      <div className="grid grid-cols-[24px_1fr_1fr_1fr_24px] gap-1 items-center">
+                        <span
+                          title={frame}
+                          className="text-[11px] font-mono font-semibold text-[#6B6661]"
+                        >
+                          TF{frame.replace(/\D/g, "")}
+                        </span>
+                        {([0, 1, 2] as const).map((axisIdx) => (
+                          <Input
+                            key={axisIdx}
+                            value={framePoints[frame]?.[axisIdx] ?? ""}
+                            onChange={(e) =>
+                              updateFramePoint(frame, axisIdx, e.target.value)
+                            }
+                            className="h-6 px-1.5 font-mono text-[11px]"
+                          />
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => void handleTeachFramePoint(frame)}
+                          disabled={busy !== null}
+                          title={`Teach ${frame} from arm (it must be the active frame)`}
+                          className="h-6 w-6 inline-flex items-center justify-center rounded-sm border border-[#DCD9D0] bg-[#F2EFE9]/60 text-[#006699] hover:border-[#006699] cursor-pointer disabled:opacity-40"
+                        >
+                          <Crosshair className="h-3 w-3" />
+                        </button>
+                      </div>
+                      {shift && (
+                        <div className="pl-7 text-[10px] font-mono text-[#6B6661]">
+                          shift {shift.map((v) => v.toFixed(2)).join(", ")} mm
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
               <div className="flex items-center justify-between gap-2">
                 <span
                   className="text-[11px] text-[#6B6661] truncate"
@@ -1973,13 +2088,8 @@ export function App() {
         <PenFramesSettings
           pens={pens}
           frames={penFrames}
-          points={framePoints}
           robotHost={robotHost}
-          penOffset={penOffset}
-          onSave={(frames, points) => {
-            setPenFrames(frames)
-            setFramePoints(points)
-          }}
+          onSave={setPenFrames}
           onClose={() => setSettingsOpen(false)}
         />
       )}
