@@ -53,6 +53,10 @@ import {
   type TargetFrames,
 } from "@/lib/pen-frames"
 
+type SourceKind = "svg" | "raster" | "gcode"
+
+const GCODE_EXTENSIONS = [".gcode", ".nc", ".ngc"]
+
 interface PenEntry {
   name: string
   hex: string
@@ -241,7 +245,7 @@ export function App() {
 
   const [serverOnline, setServerOnline] = useState<boolean | null>(null)
   const [sourceName, setSourceName] = useState<string>("compass-rose.svg")
-  const [sourceKind, setSourceKind] = useState<"svg" | "raster">("svg")
+  const [sourceKind, setSourceKind] = useState<SourceKind>("svg")
   const [rawBytes, setRawBytes] = useState<Uint8Array>(() =>
     new TextEncoder().encode(SAMPLE_ROSE_SVG)
   )
@@ -328,15 +332,43 @@ export function App() {
     return { origin: `${originX},${originY},${originZ}` }
   }, [placementMode, corners, originX, originY, originZ])
 
+  const dryRun = useCallback(
+    async (code: string) => {
+      const drawParams = new URLSearchParams({
+        ...buildPlacementParam(),
+        tilt: String(tilt),
+        rapid: String(rapid),
+        dry_run: "true",
+      })
+      const drawRes = await fetch(`/draw?${drawParams.toString()}`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: code,
+      })
+      if (drawRes.ok) {
+        const summary: DrawSummary = await drawRes.json()
+        setDrawSummary(summary)
+      }
+    },
+    [buildPlacementParam, tilt, rapid]
+  )
+
   const runPipeline = useCallback(
     async (
       bytes: Uint8Array,
-      kind: "svg" | "raster",
+      kind: SourceKind,
       currentPens: PenEntry[]
     ) => {
       setBusy("Compiling...")
       setErrorMessage(null)
       try {
+        if (kind === "gcode") {
+          const loadedGcode = new TextDecoder().decode(bytes)
+          setTracedSvg("")
+          setGcodeText(loadedGcode)
+          await dryRun(loadedGcode)
+          return
+        }
         const penParam = serializePens(currentPens)
         let currentSvg = ""
         if (kind === "raster") {
@@ -385,22 +417,7 @@ export function App() {
         }
         const compiledGcode = await gcodeRes.text()
         setGcodeText(compiledGcode)
-
-        const drawParams = new URLSearchParams({
-          ...buildPlacementParam(),
-          tilt: String(tilt),
-          rapid: String(rapid),
-          dry_run: "true",
-        })
-        const drawRes = await fetch(`/draw?${drawParams.toString()}`, {
-          method: "POST",
-          headers: { "Content-Type": "text/plain" },
-          body: compiledGcode,
-        })
-        if (drawRes.ok) {
-          const summary: DrawSummary = await drawRes.json()
-          setDrawSummary(summary)
-        }
+        await dryRun(compiledGcode)
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : String(err))
       } finally {
@@ -420,9 +437,7 @@ export function App() {
       outline,
       feed,
       lift,
-      buildPlacementParam,
-      tilt,
-      rapid,
+      dryRun,
     ]
   )
 
@@ -452,9 +467,13 @@ export function App() {
   const handleFileUpload = async (file: File) => {
     const buffer = await file.arrayBuffer()
     const bytes = new Uint8Array(buffer)
-    const isSvg =
-      file.type.includes("svg") || file.name.toLowerCase().endsWith(".svg")
-    const kind = isSvg ? "svg" : "raster"
+    const name = file.name.toLowerCase()
+    const isSvg = file.type.includes("svg") || name.endsWith(".svg")
+    const kind: SourceKind = GCODE_EXTENSIONS.some((ext) => name.endsWith(ext))
+      ? "gcode"
+      : isSvg
+        ? "svg"
+        : "raster"
     setSourceName(file.name)
     setSourceKind(kind)
     setRawBytes(bytes)
@@ -966,7 +985,7 @@ export function App() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*,.svg"
+                accept={["image/*", ".svg", ...GCODE_EXTENSIONS].join(",")}
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0]
@@ -990,7 +1009,7 @@ export function App() {
                     {sourceName}
                   </div>
                   <div className="text-[10px] text-[#6B6661]">
-                    Click or drop SVG, PNG, JPEG
+                    Click or drop SVG, PNG, JPEG or G-code
                   </div>
                 </div>
               </button>
